@@ -8,7 +8,49 @@
 
 /* Begin PBXBuildFile section */
 		DE7A8F8E2CD57540005DBB53 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = DE7A8F8D2CD5753A005DBB53 /* .gitignore */; };
+		DE7A8F952CD57950005DBB53 /* SDL3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; };
+		DE7A8F962CD57950005DBB53 /* SDL3.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		DE7A8F982CD57953005DBB53 /* SDL3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; };
+		DE7A8F992CD57953005DBB53 /* SDL3.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		DE7A8F9B2CD57957005DBB53 /* SDL3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; };
+		DE7A8F9C2CD57957005DBB53 /* SDL3.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		DE7A8F972CD57950005DBB53 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				DE7A8F962CD57950005DBB53 /* SDL3.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DE7A8F9A2CD57953005DBB53 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				DE7A8F992CD57953005DBB53 /* SDL3.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DE7A8F9D2CD57957005DBB53 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				DE7A8F9C2CD57957005DBB53 /* SDL3.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		DE7A8F3A2CD55A34005DBB53 /* SDL3Skeleton.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SDL3Skeleton.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -16,6 +58,7 @@
 		DE7A8F632CD55A34005DBB53 /* SDL3Skeleton.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SDL3Skeleton.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DE7A8F8D2CD5753A005DBB53 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 		DE7A8F902CD578B6005DBB53 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = SDL3.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -78,6 +121,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE7A8F952CD57950005DBB53 /* SDL3.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -85,6 +129,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE7A8F982CD57953005DBB53 /* SDL3.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -92,6 +137,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE7A8F9B2CD57957005DBB53 /* SDL3.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -101,6 +147,7 @@
 		DE7A8F2B2CD55A32005DBB53 = {
 			isa = PBXGroup;
 			children = (
+				DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */,
 				DE7A8F902CD578B6005DBB53 /* README.md */,
 				DE7A8F8D2CD5753A005DBB53 /* .gitignore */,
 				DE7A8F302CD55A32005DBB53 /* SDL3Skeleton Shared */,
@@ -131,6 +178,7 @@
 				DE7A8F362CD55A34005DBB53 /* Sources */,
 				DE7A8F372CD55A34005DBB53 /* Frameworks */,
 				DE7A8F382CD55A34005DBB53 /* Resources */,
+				DE7A8F972CD57950005DBB53 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -153,6 +201,7 @@
 				DE7A8F4B2CD55A34005DBB53 /* Sources */,
 				DE7A8F4C2CD55A34005DBB53 /* Frameworks */,
 				DE7A8F4D2CD55A34005DBB53 /* Resources */,
+				DE7A8F9A2CD57953005DBB53 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -175,6 +224,7 @@
 				DE7A8F5F2CD55A34005DBB53 /* Sources */,
 				DE7A8F602CD55A34005DBB53 /* Frameworks */,
 				DE7A8F612CD55A34005DBB53 /* Resources */,
+				DE7A8F9D2CD57957005DBB53 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
