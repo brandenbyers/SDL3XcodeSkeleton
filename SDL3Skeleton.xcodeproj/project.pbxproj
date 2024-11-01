@@ -15,6 +15,7 @@
 		DE7A8F4F2CD55A34005DBB53 /* SDL3Skeleton.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SDL3Skeleton.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DE7A8F632CD55A34005DBB53 /* SDL3Skeleton.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SDL3Skeleton.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DE7A8F8D2CD5753A005DBB53 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
+		DE7A8F902CD578B6005DBB53 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -100,6 +101,7 @@
 		DE7A8F2B2CD55A32005DBB53 = {
 			isa = PBXGroup;
 			children = (
+				DE7A8F902CD578B6005DBB53 /* README.md */,
 				DE7A8F8D2CD5753A005DBB53 /* .gitignore */,
 				DE7A8F302CD55A32005DBB53 /* SDL3Skeleton Shared */,
 				DE7A8F3C2CD55A34005DBB53 /* SDL3Skeleton iOS */,
