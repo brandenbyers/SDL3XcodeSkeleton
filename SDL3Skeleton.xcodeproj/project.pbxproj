@@ -16,6 +16,16 @@
 		DE7A8F9C2CD57957005DBB53 /* SDL3.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		DE7A8FA62CD57B41005DBB53 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = DE7A8F2C2CD55A32005DBB53 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DE7A8F622CD55A34005DBB53;
+			remoteInfo = "SDL3Skeleton macOS";
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		DE7A8F972CD57950005DBB53 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -59,6 +69,7 @@
 		DE7A8F8D2CD5753A005DBB53 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 		DE7A8F902CD578B6005DBB53 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = SDL3.xcframework; sourceTree = "<group>"; };
+		DE7A8FA22CD57B41005DBB53 /* SDL3SkeletonTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SDL3SkeletonTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -66,6 +77,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Assets.xcassets,
+				example.c,
 				main.c,
 			);
 			target = DE7A8F392CD55A34005DBB53 /* SDL3Skeleton iOS */;
@@ -74,6 +86,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Assets.xcassets,
+				example.c,
 				main.c,
 			);
 			target = DE7A8F4E2CD55A34005DBB53 /* SDL3Skeleton tvOS */;
@@ -82,9 +95,17 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Assets.xcassets,
+				example.c,
 				main.c,
 			);
 			target = DE7A8F622CD55A34005DBB53 /* SDL3Skeleton macOS */;
+		};
+		DE7A8FB42CD57B87005DBB53 /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3SkeletonTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				example.c,
+			);
+			target = DE7A8FA12CD57B41005DBB53 /* SDL3SkeletonTests */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -95,6 +116,7 @@
 				DE7A8F7A2CD55A34005DBB53 /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3Skeleton iOS" target */,
 				DE7A8F7E2CD55A34005DBB53 /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3Skeleton tvOS" target */,
 				DE7A8F822CD55A34005DBB53 /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3Skeleton macOS" target */,
+				DE7A8FB42CD57B87005DBB53 /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3SkeletonTests" target */,
 			);
 			path = "SDL3Skeleton Shared";
 			sourceTree = "<group>";
@@ -112,6 +134,11 @@
 		DE7A8F642CD55A34005DBB53 /* SDL3Skeleton macOS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "SDL3Skeleton macOS";
+			sourceTree = "<group>";
+		};
+		DE7A8FA32CD57B41005DBB53 /* SDL3SkeletonTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SDL3SkeletonTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -141,6 +168,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DE7A8F9F2CD57B41005DBB53 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -154,6 +188,7 @@
 				DE7A8F3C2CD55A34005DBB53 /* SDL3Skeleton iOS */,
 				DE7A8F502CD55A34005DBB53 /* SDL3Skeleton tvOS */,
 				DE7A8F642CD55A34005DBB53 /* SDL3Skeleton macOS */,
+				DE7A8FA32CD57B41005DBB53 /* SDL3SkeletonTests */,
 				DE7A8F3B2CD55A34005DBB53 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -164,6 +199,7 @@
 				DE7A8F3A2CD55A34005DBB53 /* SDL3Skeleton.app */,
 				DE7A8F4F2CD55A34005DBB53 /* SDL3Skeleton.app */,
 				DE7A8F632CD55A34005DBB53 /* SDL3Skeleton.app */,
+				DE7A8FA22CD57B41005DBB53 /* SDL3SkeletonTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -240,6 +276,29 @@
 			productReference = DE7A8F632CD55A34005DBB53 /* SDL3Skeleton.app */;
 			productType = "com.apple.product-type.application";
 		};
+		DE7A8FA12CD57B41005DBB53 /* SDL3SkeletonTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DE7A8FA82CD57B41005DBB53 /* Build configuration list for PBXNativeTarget "SDL3SkeletonTests" */;
+			buildPhases = (
+				DE7A8F9E2CD57B41005DBB53 /* Sources */,
+				DE7A8F9F2CD57B41005DBB53 /* Frameworks */,
+				DE7A8FA02CD57B41005DBB53 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DE7A8FA72CD57B41005DBB53 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				DE7A8FA32CD57B41005DBB53 /* SDL3SkeletonTests */,
+			);
+			name = SDL3SkeletonTests;
+			packageProductDependencies = (
+			);
+			productName = SDL3SkeletonTests;
+			productReference = DE7A8FA22CD57B41005DBB53 /* SDL3SkeletonTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -247,6 +306,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1610;
 				LastUpgradeCheck = 1610;
 				TargetAttributes = {
 					DE7A8F392CD55A34005DBB53 = {
@@ -258,6 +318,10 @@
 					};
 					DE7A8F622CD55A34005DBB53 = {
 						CreatedOnToolsVersion = 16.1;
+					};
+					DE7A8FA12CD57B41005DBB53 = {
+						CreatedOnToolsVersion = 16.1;
+						LastSwiftMigration = 1610;
 					};
 				};
 			};
@@ -278,6 +342,7 @@
 				DE7A8F392CD55A34005DBB53 /* SDL3Skeleton iOS */,
 				DE7A8F4E2CD55A34005DBB53 /* SDL3Skeleton tvOS */,
 				DE7A8F622CD55A34005DBB53 /* SDL3Skeleton macOS */,
+				DE7A8FA12CD57B41005DBB53 /* SDL3SkeletonTests */,
 			);
 		};
 /* End PBXProject section */
@@ -299,6 +364,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		DE7A8F612CD55A34005DBB53 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DE7A8FA02CD57B41005DBB53 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -329,7 +401,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DE7A8F9E2CD57B41005DBB53 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		DE7A8FA72CD57B41005DBB53 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = DE7A8F622CD55A34005DBB53 /* SDL3Skeleton macOS */;
+			targetProxy = DE7A8FA62CD57B41005DBB53 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		DE7A8F7C2CD55A34005DBB53 /* Debug */ = {
@@ -610,6 +697,55 @@
 			};
 			name = Release;
 		};
+		DE7A8FA92CD57B41005DBB53 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = M684D4G685;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.1;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.brandenbyers.SDL3SkeletonTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "SDL3Skeleton Shared/SDL3SkeletonTests-Bridging-Header.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				XROS_DEPLOYMENT_TARGET = 2.1;
+			};
+			name = Debug;
+		};
+		DE7A8FAA2CD57B41005DBB53 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = M684D4G685;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.1;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.brandenbyers.SDL3SkeletonTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "SDL3Skeleton Shared/SDL3SkeletonTests-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				XROS_DEPLOYMENT_TARGET = 2.1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -645,6 +781,15 @@
 			buildConfigurations = (
 				DE7A8F842CD55A34005DBB53 /* Debug */,
 				DE7A8F852CD55A34005DBB53 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DE7A8FA82CD57B41005DBB53 /* Build configuration list for PBXNativeTarget "SDL3SkeletonTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DE7A8FA92CD57B41005DBB53 /* Debug */,
+				DE7A8FAA2CD57B41005DBB53 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
