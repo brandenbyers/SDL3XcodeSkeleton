@@ -20,6 +20,25 @@
 #define SDL_WINDOW_WIDTH  (BLOCK_SIZE_IN_PIXELS * GAME_GRID_WIDTH)
 #define SDL_WINDOW_HEIGHT (BLOCK_SIZE_IN_PIXELS * GAME_GRID_HEIGHT)
 
+/* Rendering and display settings */
+#define LOGICAL_WIDTH  (BLOCK_SIZE_IN_PIXELS * GAME_GRID_WIDTH)   /* Logical width for rendering */
+#define LOGICAL_HEIGHT (BLOCK_SIZE_IN_PIXELS * GAME_GRID_HEIGHT)  /* Logical height for rendering */
+
+/*
+ * Platform-specific definitions
+ */
+#if defined(__APPLE__) && TARGET_OS_TV
+#define IS_TVOS 1
+#else
+#define IS_TVOS 0
+#endif
+
+#if defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_TV)
+#define IS_MOBILE_APPLE 1
+#else
+#define IS_MOBILE_APPLE 0
+#endif
+
 /*
  * Bitmasking Definitions for Cell Storage
  *
@@ -80,6 +99,7 @@ typedef struct {
     SDL_Renderer *renderer;   /* SDL renderer */
     GameContext   game_ctx;   /* Game context/state */
     Uint64        last_step;  /* Time of last game logic update */
+    bool          fullscreen; /* Track fullscreen state */
 } AppState;
 
 /*
@@ -135,6 +155,25 @@ static void wrap_around_(char *val, char max) {
     } else if (*val > max - 1) {
         *val = 0;
     }
+}
+
+/*
+ * Function to Toggle Fullscreen Mode (Desktop platforms only)
+ *
+ * This function toggles between windowed and fullscreen modes,
+ * and ensures the rendering maintains the correct aspect ratio.
+ */
+static void toggle_fullscreen_(AppState *as) {
+#if !IS_MOBILE_APPLE
+    as->fullscreen = !as->fullscreen;
+    
+    if (as->fullscreen) {
+        SDL_SetWindowFullscreen(as->window, true);
+    } else {
+        SDL_SetWindowFullscreen(as->window, false);
+        SDL_SetWindowSize(as->window, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+    }
+#endif
 }
 
 /*
@@ -206,12 +245,37 @@ void game_step(GameContext *ctx) {
 }
 
 /*
+ * Function to Configure Rendering for Pixel Art
+ *
+ * This function sets up the renderer with the appropriate scaling quality
+ * and logical size to maintain pixel-perfect rendering across different window sizes.
+ */
+static void configure_rendering_(AppState *as) {
+    int window_width, window_height;
+    SDL_SetRenderScale(as->renderer, 1.0f, 1.0f);
+    
+    /* Get the current window size */
+    SDL_GetWindowSize(as->window, &window_width, &window_height);
+    
+    /* Set logical presentation - this ensures consistent rendering regardless of window size */
+    /* SDL3 uses SetRenderLogicalPresentation instead of SDL2's RenderSetLogicalSize */
+    /* SDL_LOGICAL_PRESENTATION_LETTERBOX = maintain aspect ratio with letterboxing */
+    SDL_SetRenderLogicalPresentation(as->renderer, LOGICAL_WIDTH, LOGICAL_HEIGHT,
+                                     SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    
+    /* Set the render scale quality for pixel art */
+    SDL_SetRenderScale(as->renderer, 1.0f, 1.0f);
+}
+
+/*
  * Function to Handle Keyboard Input Events
  *
  * This function processes keyboard input and updates the game state accordingly.
  * It handles movement input, restarting the game, and quitting the application.
  */
-static int handle_key_event_(GameContext *ctx, SDL_Scancode key_code) {
+static int handle_key_event_(AppState *as, SDL_Scancode key_code) {
+    GameContext *ctx = &as->game_ctx;
+    
     switch (key_code) {
             /* Quit application */
         case SDL_SCANCODE_ESCAPE:
@@ -220,6 +284,10 @@ static int handle_key_event_(GameContext *ctx, SDL_Scancode key_code) {
             /* Restart the game */
         case SDL_SCANCODE_R:
             game_initialize(ctx);
+            break;
+            /* Toggle fullscreen (desktop platforms only) */
+        case SDL_SCANCODE_F:
+            toggle_fullscreen_(as);
             break;
             /* Change player direction */
         case SDL_SCANCODE_RIGHT:
@@ -286,12 +354,26 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 }
 
 /*
+ * Function to Handle Window Events
+ *
+ * This function processes window events such as resizing and ensures
+ * the rendering is adjusted appropriately.
+ */
+static void handle_window_event_(AppState *as, SDL_Event *window_event) {
+    if (window_event->type == SDL_EVENT_WINDOW_RESIZED) {
+        configure_rendering_(as);
+    }
+}
+
+/*
  * Application Initialization Function
  *
  * This function initializes the application, sets up the SDL window and renderer,
  * and initializes the game state. It also sets application metadata.
  */
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
+    Uint32 window_flags = 0;
+    
     /* Initialize SDL subsystems */
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         return SDL_APP_FAILURE;
@@ -305,10 +387,23 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     
     *appstate = as;
     
+    /* Set default fullscreen state */
+    as->fullscreen = false;
+    
+    /* On mobile Apple platforms, always fullscreen */
+#if IS_MOBILE_APPLE
+    window_flags = SDL_WINDOW_FULLSCREEN;
+#endif
+    
     /* Create SDL window and renderer */
-    if (!SDL_CreateWindowAndRenderer("SDL3 Game Template", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT, 0, &as->window, &as->renderer)) {
+    if (!SDL_CreateWindowAndRenderer("SDL3 Game Template", SDL_WINDOW_WIDTH,
+                                     SDL_WINDOW_HEIGHT, window_flags,
+                                     &as->window, &as->renderer)) {
         return SDL_APP_FAILURE;
     }
+    
+    /* Configure rendering for pixel art */
+    configure_rendering_(as);
     
     /* Initialize game state */
     game_initialize(&as->game_ctx);
@@ -325,12 +420,16 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
  * and updates the application state accordingly.
  */
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
-    GameContext *ctx = &((AppState *)appstate)->game_ctx;
+    AppState *as = (AppState *)appstate;
+    
     switch (event->type) {
         case SDL_EVENT_QUIT:
             return SDL_APP_SUCCESS;
         case SDL_EVENT_KEY_DOWN:
-            return handle_key_event_(ctx, event->key.scancode);
+            return handle_key_event_(as, event->key.scancode);
+        case SDL_EVENT_WINDOW_RESIZED:
+            handle_window_event_(as, event);
+            break;
         default:
             break;
     }
@@ -350,5 +449,28 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
         SDL_DestroyWindow(as->window);
         SDL_free(as);
     }
+    
+    /* Explicitly quit SDL to ensure proper cleanup on all platforms */
+    SDL_Quit();
 }
 
+/*
+ * tvOS Specific Main Function
+ *
+ * This function is only compiled on tvOS and resolves the SIGTERM issue
+ * by ensuring proper cleanup in the application's lifecycle.
+ */
+#if IS_TVOS
+int main(int argc, char *argv[]) {
+    /* Setup custom signal handlers for tvOS */
+    signal(SIGTERM, SIG_IGN);  /* Ignore SIGTERM signal */
+    
+    /* Use SDL_RunApp with explicit cleanup handling */
+    int result = SDL_RunApp(argc, argv, SDL_main, NULL);
+    
+    /* Additional cleanup for tvOS */
+    SDL_Quit();
+    
+    return result;
+}
+#endif
