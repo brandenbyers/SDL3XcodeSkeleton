@@ -104,7 +104,7 @@ typedef struct {
     InputState input;              /* Input state */
     uint32_t frame_count;          /* Total frames executed (32-bit counter) */
     uint16_t accumulated_time;     /* Accumulated time since last tick (ms) */
-    uint32_t last_tick_time;       /* Time of last logic tick */
+    uint64_t last_tick_time;       /* Time of last logic tick */
 } GameState;
 
 /* Application State */
@@ -438,10 +438,10 @@ static void init_game(GameState* game) {
         set_cell_bit(game, i, GRID_HEIGHT - 1, CELL_WALL); /* Bottom wall */
     }
     
-    for (int i = 0; i < GRID_HEIGHT; i++) {
-        set_cell_bit(game, 0, i, CELL_WALL);              /* Left wall */
-        set_cell_bit(game, GRID_WIDTH - 1, i, CELL_WALL); /* Right wall */
-    }
+//    for (int i = 0; i < GRID_HEIGHT; i++) {
+//        set_cell_bit(game, 0, i, CELL_WALL);              /* Left wall */
+//        set_cell_bit(game, GRID_WIDTH - 1, i, CELL_WALL); /* Right wall */
+//    }
     
     /* Inner walls for testing */
     for (int x = 10; x < 20; x++) {
@@ -845,7 +845,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     GameState* game = &app->game;
     
     /* Calculate elapsed time */
-    Uint32 current_time = SDL_GetTicks();
+    Uint64 current_time = SDL_GetTicks();
     int delta_time = (int)(current_time - game->last_tick_time);
     game->last_tick_time = current_time;
     
