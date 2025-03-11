@@ -1,24 +1,11 @@
 /*
- * Bit-Twiddled Classic Game Engine (OPTIMIZED)
+ * High-Performance Game Engine
  *
- * This implementation embraces classic game optimization techniques used in 8-bit
- * and 16-bit era games, while ensuring:
- * 1. Proper display of the full 64×32 grid
- * 2. Smooth, consistent animation between tiles
- * 3. Correct screen wrapping calculations
- * 4. Optimized rendering with textures for minimal CPU usage
- * 5. Energy-aware operation on Apple platforms
- *
- * Key techniques implemented:
- * 1. Bit-packed grid (2 bits per cell = 4 cells per byte)
- * 2. Power-of-two dimensions (64×32) for shift operations instead of multiplication
- * 3. Input state packed into individual bits
- * 4. Movement state using bit flags instead of separate booleans
- * 5. Fixed time step with frame counting for deterministic animation
- * 6. Metal-based rendering for Apple platforms
- * 7. Texture-based rendering instead of individual draw calls
- * 8. Static textures for unchanging elements (grid lines)
- * 9. Power state management and intelligent sleep
+ * Simplified optimization focusing on:
+ * 1. Direct access to grid data for cache efficiency
+ * 2. Minimal draw calls for efficient rendering
+ * 3. Smart sleep management to reduce CPU usage
+ * 4. Power-aware operation on Apple platforms
  */
 
 #define SDL_MAIN_USE_CALLBACKS 1
@@ -29,6 +16,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>  // For memset
 #include "main.h"
 
 #if defined(__APPLE__)
@@ -50,30 +38,28 @@
 #define GRID_HEIGHT_MASK    0x1F    /* 2^5 - 1 = 31, masks lower 5 bits */
 #define GRID_WIDTH_MASK     0x3F    /* 2^6 - 1 = 63, masks lower 6 bits */
 #define GRID_SIZE           (GRID_WIDTH * GRID_HEIGHT)
-#define CELLS_PER_BYTE      4       /* 4 cells (2 bits each) per byte */
-#define GRID_BYTES          (GRID_SIZE / CELLS_PER_BYTE)  /* 512 bytes total */
 
-/* Display configuration (showing full grid) */
+/* Display configuration */
 #define PIXEL_SCALE         12      /* Screen pixels per grid cell */
 #define WINDOW_WIDTH        (GRID_WIDTH * PIXEL_SCALE)    /* Show full grid width */
 #define WINDOW_HEIGHT       (GRID_HEIGHT * PIXEL_SCALE)   /* Show full grid height */
 
 /* Game timing configuration */
 #define LOGIC_TICK_RATE     60      /* Game logic updates per second */
-#define FRAMES_PER_TILE     6       /* Frames to move one tile */
+#define FRAMES_PER_TILE     3       /* Frames to move one tile */
 #define LOGIC_TICK_MS       (1000 / LOGIC_TICK_RATE)
-#define CORNER_BUFFER_FRAMES 4      /* Frames before tile end to accept corner input */
+#define CORNER_BUFFER_FRAMES 2      /* Frames before tile end to accept corner input */
 
 /* Energy management */
 #define BATTERY_SAVER_FPS   30      /* Lower frame rate when on battery */
 #define BACKGROUND_FPS      10      /* Very low frame rate when in background */
 
-/* Cell types stored in 2 bits per cell */
+/* Cell types - One byte per cell for cache efficiency */
 typedef enum {
-    CELL_EMPTY = 0,  /* 00 binary */
-    CELL_WALL  = 1,  /* 01 binary */
-    CELL_ITEM  = 2,  /* 10 binary */
-    CELL_MAX   = 3   /* 11 binary - Unused, but needed for 2-bit mask */
+    CELL_EMPTY = 0,
+    CELL_WALL  = 1,
+    CELL_ITEM  = 2,
+    CELL_MAX   = 3  /* Not used as a cell value, just for array bounds */
 } CellType;
 
 /* Movement direction encoding */
@@ -94,34 +80,37 @@ typedef enum {
 #define HAS_BUFFERED    0x10
 #define RESTART_REQ     0x20
 
-/* Bit flags for movement state */
-#define MOVE_IS_MOVING     0x01
-#define MOVE_JUST_STARTED  0x02
-#define MOVE_DIR_MASK      0x1C    /* Bits 2-4 for direction (0-4) */
-#define MOVE_DIR_SHIFT     2       /* Shift amount to get direction */
-
-/* Bit-packed input state (3 bytes) */
+/* Input state structure */
 typedef struct {
     uint8_t key_states;        /* Bit 0-3: direction keys, 4: has_buffered, 5: restart */
     uint8_t current_dir;       /* Current direction (0-3, 255 for none) */
     uint8_t buffered_dir;      /* Buffered direction (0-3, 255 for none) */
 } InputState;
 
-/* Bit-packed movement state (6 bytes) */
+/* Movement state - 8 bytes */
 typedef struct {
     uint8_t pos_x;            /* Current X (0-63) */
     uint8_t pos_y;            /* Current Y (0-31) */
     uint8_t target_x;         /* Target X (0-63) */
     uint8_t target_y;         /* Target Y (0-31) */
-    uint8_t state_flags;      /* Bit 0: is_moving, 1: just_started, 2-4: direction */
+    uint8_t direction;        /* Current direction (0-3, 255 for none) */
+    uint8_t is_moving;        /* Boolean: 1 if moving, 0 if not */
+    uint8_t just_started;     /* Boolean: 1 if just started, 0 if not */
     uint8_t move_frame;       /* Current frame (0-11) */
 } MovementState;
 
+/* Grid change tracking */
+typedef struct {
+    bool cells_changed;       /* True if any cells changed */
+    uint64_t last_frame_updated; /* Last frame the grid texture was updated */
+} GridState;
+
 /* Game State */
 typedef struct {
-    uint8_t grid[GRID_BYTES];      /* Bit-packed grid: 2 bits per cell, 4 cells per byte */
+    uint8_t grid[GRID_SIZE];      /* Grid: one byte per cell for better cache efficiency */
     MovementState player;          /* Player movement state */
     InputState input;              /* Input state */
+    GridState grid_state;          /* Grid change tracking */
     uint32_t frame_count;          /* Total frames executed (32-bit counter) */
     uint16_t accumulated_time;     /* Accumulated time since last tick (ms) */
     uint64_t last_tick_time;       /* Time of last logic tick */
@@ -134,11 +123,8 @@ typedef struct {
     SDL_Gamepad* gamepad;
     SDL_JoystickID gamepad_id;
     
-    /* Texture-based rendering */
-    SDL_Texture* cell_textures[CELL_MAX];  /* Textures for each cell type */
-    SDL_Texture* player_texture;           /* Player texture */
-    SDL_Texture* grid_lines_texture;       /* Pre-rendered grid lines */
-    SDL_Texture* render_target;            /* Render target for full scene */
+    /* Simple texture-based rendering */
+    SDL_Texture* background_texture;  /* Static walls and grid lines */
     
     GameState game;
     uint8_t app_flags;             /* Bit 0: fullscreen, 1-2: time scale */
@@ -148,26 +134,25 @@ typedef struct {
     bool is_in_background;         /* True if app is in background */
     bool is_low_power_mode;        /* True if in low power mode */
     int target_fps;                /* Target FPS based on power state */
+    
+    /* Performance tracking */
+    uint64_t last_fps_time;        /* Last time FPS was calculated */
+    int fps_count;                 /* Frame count for FPS calculation */
+    int current_fps;               /* Current FPS value */
 } AppState;
 
 /* Pre-computed lookup tables for movement */
 static const int8_t DIR_OFFSET_X[4] = {1, 0, -1, 0};   /* RIGHT, UP, LEFT, DOWN */
 static const int8_t DIR_OFFSET_Y[4] = {0, -1, 0, 1};   /* RIGHT, UP, LEFT, DOWN */
 
-/* Power state colors - dimmer in low power modes */
-static const SDL_Color CELL_COLORS[CELL_MAX][2] = {
-    {{ 0,   0,   0,   255 }, { 0,   0,   0,   255 }}, /* CELL_EMPTY: black in both modes */
-    {{ 64,  64,  192, 255 }, { 32,  32,  128, 255 }}, /* CELL_WALL: blue, dimmer in low power */
-    {{ 255, 255, 0,   255 }, { 192, 192, 0,   255 }}, /* CELL_ITEM: yellow, dimmer in low power */
+/* Power state colors */
+static const SDL_Color CELL_COLORS[CELL_MAX] = {
+    { 0,   0,   0,   255 },  /* CELL_EMPTY: black */
+    { 64,  64,  192, 255 },  /* CELL_WALL: blue */
+    { 255, 255, 0,   255 },  /* CELL_ITEM: yellow */
 };
-static const SDL_Color PLAYER_COLOR[2] = {
-    { 0, 255, 0, 255 },   /* Normal: bright green */
-    { 0, 192, 0, 255 }    /* Low power: dimmer green */
-};
-static const SDL_Color GRID_LINE_COLOR[2] = {
-    { 32, 32, 32, 255 },  /* Normal: dark gray */
-    { 16, 16, 16, 255 }   /* Low power: very dark gray */
-};
+static const SDL_Color PLAYER_COLOR = { 0, 255, 0, 255 };  /* Player: green */
+static const SDL_Color GRID_LINE_COLOR = { 32, 32, 32, 255 }; /* Grid lines: dark gray */
 
 /* Function declarations */
 static void init_game(GameState* game);
@@ -178,16 +163,27 @@ static void render_game(AppState* app);
 static void create_textures(AppState* app);
 static void destroy_textures(AppState* app);
 static void update_power_state(AppState* app);
-static void create_cell_texture(AppState* app, CellType type);
-static void create_player_texture(AppState* app);
-static void create_grid_lines_texture(AppState* app);
+static void create_background_texture(AppState* app);
 
 /*
- * Bit-Manipulating Grid Functions
+ * Optimized Grid Functions
  */
 
-/* Get cell with bit operations */
-static CellType get_cell_bit(const GameState* game, int x, int y) {
+/* Get cell with direct array access for better cache performance */
+static inline CellType get_cell(const GameState* game, int x, int y) {
+    /* Mask coordinates to ensure they wrap properly */
+    x &= GRID_WIDTH_MASK;
+    y &= GRID_HEIGHT_MASK;
+    
+    /* Calculate flat index with bit shifts (still efficient for power-of-two sizes) */
+    int idx = (y << GRID_WIDTH_SHIFT) | x;
+    
+    /* Direct array access - much more cache friendly */
+    return (CellType)game->grid[idx];
+}
+
+/* Set cell with direct array access */
+static inline void set_cell(GameState* game, int x, int y, CellType type) {
     /* Mask coordinates to ensure they wrap properly */
     x &= GRID_WIDTH_MASK;
     y &= GRID_HEIGHT_MASK;
@@ -195,44 +191,23 @@ static CellType get_cell_bit(const GameState* game, int x, int y) {
     /* Calculate flat index with bit shifts */
     int idx = (y << GRID_WIDTH_SHIFT) | x;
     
-    /* Find byte and position within byte */
-    int byte_idx = idx >> 2;               /* Divide by 4 (cells per byte) */
-    int bit_pos = (idx & 3) << 1;          /* Position within byte (multiply by 2 bits per cell) */
-    
-    /* Extract and return the 2-bit cell value */
-    return (CellType)((game->grid[byte_idx] >> bit_pos) & 0x3);
-}
-
-/* Set cell with bit operations */
-static void set_cell_bit(GameState* game, int x, int y, CellType type) {
-    /* Mask coordinates to ensure they wrap properly */
-    x &= GRID_WIDTH_MASK;
-    y &= GRID_HEIGHT_MASK;
-    
-    /* Calculate flat index with bit shifts */
-    int idx = (y << GRID_WIDTH_SHIFT) | x;
-    
-    /* Find byte and position within byte */
-    int byte_idx = idx >> 2;               /* Divide by 4 (cells per byte) */
-    int bit_pos = (idx & 3) << 1;          /* Position within byte (2 bits per cell) */
-    
-    /* Clear the 2 bits for this cell */
-    uint8_t mask = ~(0x3 << bit_pos);      /* Create mask to clear the bits */
-    
-    /* Set the new cell value */
-    game->grid[byte_idx] = (game->grid[byte_idx] & mask) | ((type & 0x3) << bit_pos);
+    /* Mark grid as changed if the cell value is different */
+    if (game->grid[idx] != type) {
+        game->grid[idx] = type;
+        game->grid_state.cells_changed = true;
+    }
 }
 
 /*
- * Input State Functions with Bit Operations
+ * Input State Functions
  */
 
-/* Check if a direction key is pressed using bit operations */
+/* Check if a direction key is pressed */
 static inline bool is_key_pressed(const InputState* input, Direction dir) {
     return (input->key_states & (1 << dir)) != 0;
 }
 
-/* Set key state with bit operations */
+/* Set key state */
 static inline void set_key_state(InputState* input, Direction dir, bool pressed) {
     input->key_states = (input->key_states & ~(1 << dir)) | (pressed << dir);
 }
@@ -258,45 +233,18 @@ static inline void set_restart_requested(InputState* input, bool requested) {
 }
 
 /*
- * Movement State Functions with Bit Operations
+ * Movement Functions
  */
-
-/* Check if entity is moving */
-static inline bool is_moving(const MovementState* movement) {
-    return (movement->state_flags & MOVE_IS_MOVING) != 0;
-}
-
-/* Set moving state */
-static inline void set_moving(MovementState* movement, bool moving) {
-    movement->state_flags = (movement->state_flags & ~MOVE_IS_MOVING) | (moving ? MOVE_IS_MOVING : 0);
-}
-
-/* Check if movement just started */
-static inline bool just_started_moving(const MovementState* movement) {
-    return (movement->state_flags & MOVE_JUST_STARTED) != 0;
-}
-
-/* Set just started moving flag */
-static inline void set_just_started(MovementState* movement, bool just_started) {
-    movement->state_flags = (movement->state_flags & ~MOVE_JUST_STARTED) |
-    (just_started ? MOVE_JUST_STARTED : 0);
-}
 
 /* Get current direction */
 static inline Direction get_direction(const MovementState* movement) {
-    uint8_t dir_bits = (movement->state_flags & MOVE_DIR_MASK) >> MOVE_DIR_SHIFT;
-    return dir_bits ? (Direction)(dir_bits - 1) : DIR_NONE;
+    return (Direction)movement->direction;
 }
 
 /* Set current direction */
 static inline void set_direction(MovementState* movement, Direction dir) {
-    movement->state_flags = (movement->state_flags & ~MOVE_DIR_MASK) |
-    ((dir == DIR_NONE ? 0 : dir + 1) << MOVE_DIR_SHIFT);
+    movement->direction = dir;
 }
-
-/*
- * Movement Functions
- */
 
 /* Check if a move is valid */
 static bool is_valid_move(const GameState* game, int x, int y, Direction dir) {
@@ -308,7 +256,7 @@ static bool is_valid_move(const GameState* game, int x, int y, Direction dir) {
     int target_y = (y + DIR_OFFSET_Y[dir]) & GRID_HEIGHT_MASK;
     
     /* Check if target cell is empty or an item */
-    CellType target_cell = get_cell_bit(game, target_x, target_y);
+    CellType target_cell = get_cell(game, target_x, target_y);
     
     /* Return true if not a wall */
     return target_cell != CELL_WALL;
@@ -320,7 +268,7 @@ static void get_target_position(int x, int y, Direction dir, int* target_x, int*
     *target_y = (y + DIR_OFFSET_Y[dir]) & GRID_HEIGHT_MASK;
 }
 
-/* Check if directions are opposite using bit operations */
+/* Check if directions are opposite */
 static bool are_directions_opposite(Direction dir1, Direction dir2) {
     /* If either direction is NONE, they're not opposite */
     if (dir1 == DIR_NONE || dir2 == DIR_NONE) return false;
@@ -329,7 +277,7 @@ static bool are_directions_opposite(Direction dir1, Direction dir2) {
     return ((dir1 ^ dir2) == 2);
 }
 
-/* Start Movement Using Bit Operations */
+/* Start Movement */
 static bool start_movement(GameState* game, Direction dir) {
     MovementState* movement = &game->player;
     
@@ -340,7 +288,7 @@ static bool start_movement(GameState* game, Direction dir) {
     int target_x, target_y;
     get_target_position(movement->pos_x, movement->pos_y, dir, &target_x, &target_y);
     
-    CellType target_cell = get_cell_bit(game, target_x, target_y);
+    CellType target_cell = get_cell(game, target_x, target_y);
     bool can_move = (target_cell != CELL_WALL);
     
     /* If we can't move, return false */
@@ -350,16 +298,16 @@ static bool start_movement(GameState* game, Direction dir) {
     movement->target_x = target_x;
     movement->target_y = target_y;
     set_direction(movement, dir);
-    set_moving(movement, true);
-    set_just_started(movement, true);
+    movement->is_moving = true;
+    movement->just_started = true;
     movement->move_frame = 0;
     
     return true;
 }
 
-/* Calculate visual position based on movement state - FIXED WRAPPING CALCULATION */
+/* Calculate visual position based on movement state */
 static void get_visual_position(const MovementState* movement, float* visual_x, float* visual_y) {
-    if (!is_moving(movement) || movement->move_frame >= FRAMES_PER_TILE) {
+    if (!movement->is_moving || movement->move_frame >= FRAMES_PER_TILE) {
         /* Not moving or movement complete - use exact grid position */
         *visual_x = (float)movement->pos_x;
         *visual_y = (float)movement->pos_y;
@@ -427,12 +375,12 @@ static void complete_movement(GameState* game) {
     movement->move_frame = 0;
     
     /* Check if target has an item */
-    if (get_cell_bit(game, movement->pos_x, movement->pos_y) == CELL_ITEM) {
+    if (get_cell(game, movement->pos_x, movement->pos_y) == CELL_ITEM) {
         /* Collect the item */
-        set_cell_bit(game, movement->pos_x, movement->pos_y, CELL_EMPTY);
+        set_cell(game, movement->pos_x, movement->pos_y, CELL_EMPTY);
     }
     
-    /* Check if we should continue moving, using bit operations where possible */
+    /* Check if we should continue moving */
     Direction next_dir = DIR_NONE;
     
     /* Priority 1: Use buffered direction if valid */
@@ -465,7 +413,7 @@ static void complete_movement(GameState* game) {
     if (next_dir != DIR_NONE) {
         start_movement(game, next_dir);
     } else {
-        set_moving(movement, false);
+        movement->is_moving = false;
         set_direction(movement, DIR_NONE);
     }
 }
@@ -545,7 +493,7 @@ static void update_power_state(AppState* app) {
     /* If power state changed, update textures to match brightness */
     if (prev_battery_state != app->is_on_battery) {
         /* Regenerate textures with appropriate colors */
-        create_textures(app);
+        create_background_texture(app);
         SDL_Log("Power state changed: %s", app->is_on_battery ? "On Battery" : "On AC Power");
     }
 }
@@ -554,88 +502,16 @@ static void update_power_state(AppState* app) {
  * Texture Creation Functions for Optimized Rendering
  */
 
-/* Fill a texture with a solid color */
-static void fill_texture_with_color(SDL_Renderer* renderer, SDL_Texture* texture, SDL_Color color) {
-    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
-    SDL_SetRenderTarget(renderer, texture);
-    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-    SDL_RenderClear(renderer);
-    SDL_SetRenderTarget(renderer, NULL);
-}
-
-/* Create a cell texture for the specified type */
-static void create_cell_texture(AppState* app, CellType type) {
-    if (app->cell_textures[type]) {
-        SDL_DestroyTexture(app->cell_textures[type]);
+/* Create background texture containing walls and grid lines */
+static void create_background_texture(AppState* app) {
+    GameState* game = &app->game;
+    
+    if (app->background_texture) {
+        SDL_DestroyTexture(app->background_texture);
     }
     
-    /* Create the texture with appropriate size */
-    app->cell_textures[type] = SDL_CreateTexture(
-                                                 app->renderer,
-                                                 SDL_PIXELFORMAT_RGBA8888,
-                                                 SDL_TEXTUREACCESS_TARGET,
-                                                 PIXEL_SCALE,
-                                                 PIXEL_SCALE
-                                                 );
-    
-    /* Set appropriate color based on power state */
-    SDL_Color color = CELL_COLORS[type][app->is_on_battery || app->is_low_power_mode ? 1 : 0];
-    
-    /* For empty cells, we can use an optimized version */
-    if (type == CELL_EMPTY) {
-        /* Make it a fully transparent texture */
-        SDL_SetTextureBlendMode(app->cell_textures[type], SDL_BLENDMODE_NONE);
-        return;
-    }
-    
-    /* For items, draw a smaller square */
-    if (type == CELL_ITEM) {
-        SDL_SetRenderTarget(app->renderer, app->cell_textures[type]);
-        SDL_SetRenderDrawColor(app->renderer, 0, 0, 0, 0);
-        SDL_RenderClear(app->renderer);
-        
-        SDL_FRect rect = {
-            PIXEL_SCALE * 0.25f,
-            PIXEL_SCALE * 0.25f,
-            PIXEL_SCALE * 0.5f,
-            PIXEL_SCALE * 0.5f
-        };
-        
-        SDL_SetRenderDrawColor(app->renderer, color.r, color.g, color.b, color.a);
-        SDL_RenderFillRect(app->renderer, &rect);
-        SDL_SetRenderTarget(app->renderer, NULL);
-        SDL_SetTextureBlendMode(app->cell_textures[type], SDL_BLENDMODE_BLEND);
-    } else {
-        /* For other cells, just fill with color */
-        fill_texture_with_color(app->renderer, app->cell_textures[type], color);
-    }
-}
-
-/* Create player texture */
-static void create_player_texture(AppState* app) {
-    if (app->player_texture) {
-        SDL_DestroyTexture(app->player_texture);
-    }
-    
-    app->player_texture = SDL_CreateTexture(
-                                            app->renderer,
-                                            SDL_PIXELFORMAT_RGBA8888,
-                                            SDL_TEXTUREACCESS_TARGET,
-                                            PIXEL_SCALE,
-                                            PIXEL_SCALE
-                                            );
-    
-    SDL_Color color = PLAYER_COLOR[app->is_on_battery || app->is_low_power_mode ? 1 : 0];
-    fill_texture_with_color(app->renderer, app->player_texture, color);
-}
-
-/* Create grid lines texture */
-static void create_grid_lines_texture(AppState* app) {
-    if (app->grid_lines_texture) {
-        SDL_DestroyTexture(app->grid_lines_texture);
-    }
-    
-    app->grid_lines_texture = SDL_CreateTexture(
+    /* Create texture for walls and grid lines (static elements) */
+    app->background_texture = SDL_CreateTexture(
                                                 app->renderer,
                                                 SDL_PIXELFORMAT_RGBA8888,
                                                 SDL_TEXTUREACCESS_TARGET,
@@ -643,81 +519,69 @@ static void create_grid_lines_texture(AppState* app) {
                                                 WINDOW_HEIGHT
                                                 );
     
-    SDL_SetRenderTarget(app->renderer, app->grid_lines_texture);
-    SDL_SetRenderDrawColor(app->renderer, 0, 0, 0, 0);
+    /* Set render target to background texture */
+    SDL_SetRenderTarget(app->renderer, app->background_texture);
+    
+    /* Clear with black background */
+    SDL_SetRenderDrawColor(app->renderer, 0, 0, 0, 255);
     SDL_RenderClear(app->renderer);
     
-    SDL_Color color = GRID_LINE_COLOR[app->is_on_battery || app->is_low_power_mode ? 1 : 0];
-    SDL_SetRenderDrawColor(app->renderer, color.r, color.g, color.b, color.a);
+    /* Render walls */
+    SDL_FRect rect = { 0, 0, PIXEL_SCALE, PIXEL_SCALE };
     
-    /* Draw vertical lines */
+    for (int y = 0; y < GRID_HEIGHT; y++) {
+        for (int x = 0; x < GRID_WIDTH; x++) {
+            CellType cell = get_cell(game, x, y);
+            if (cell == CELL_WALL) {
+                rect.x = x * PIXEL_SCALE;
+                rect.y = y * PIXEL_SCALE;
+                
+                SDL_SetRenderDrawColor(app->renderer,
+                                       CELL_COLORS[CELL_WALL].r,
+                                       CELL_COLORS[CELL_WALL].g,
+                                       CELL_COLORS[CELL_WALL].b,
+                                       CELL_COLORS[CELL_WALL].a);
+                SDL_RenderFillRect(app->renderer, &rect);
+            }
+        }
+    }
+    
+    /* Draw grid lines */
+    SDL_SetRenderDrawColor(app->renderer,
+                           GRID_LINE_COLOR.r,
+                           GRID_LINE_COLOR.g,
+                           GRID_LINE_COLOR.b,
+                           GRID_LINE_COLOR.a);
+    
+    /* Vertical lines */
     for (int i = 0; i <= GRID_WIDTH; i++) {
         SDL_RenderLine(app->renderer, i * PIXEL_SCALE, 0, i * PIXEL_SCALE, WINDOW_HEIGHT);
     }
     
-    /* Draw horizontal lines */
+    /* Horizontal lines */
     for (int i = 0; i <= GRID_HEIGHT; i++) {
         SDL_RenderLine(app->renderer, 0, i * PIXEL_SCALE, WINDOW_WIDTH, i * PIXEL_SCALE);
     }
     
+    /* Reset render target */
     SDL_SetRenderTarget(app->renderer, NULL);
-    SDL_SetTextureBlendMode(app->grid_lines_texture, SDL_BLENDMODE_BLEND);
-}
-
-/* Create render target texture */
-static void create_render_target(AppState* app) {
-    if (app->render_target) {
-        SDL_DestroyTexture(app->render_target);
-    }
     
-    app->render_target = SDL_CreateTexture(
-                                           app->renderer,
-                                           SDL_PIXELFORMAT_RGBA8888,
-                                           SDL_TEXTUREACCESS_TARGET,
-                                           WINDOW_WIDTH,
-                                           WINDOW_HEIGHT
-                                           );
+    /* Mark grid as updated */
+    game->grid_state.cells_changed = false;
+    game->grid_state.last_frame_updated = game->frame_count;
 }
 
 /* Create all textures */
 static void create_textures(AppState* app) {
-    /* Create cell textures */
-    for (int i = 0; i < CELL_MAX; i++) {
-        create_cell_texture(app, i);
-    }
-    
-    /* Create player texture */
-    create_player_texture(app);
-    
-    /* Create grid lines texture */
-    create_grid_lines_texture(app);
-    
-    /* Create render target */
-    create_render_target(app);
+    /* Create background texture (walls and grid lines) */
+    create_background_texture(app);
 }
 
 /* Destroy all textures */
 static void destroy_textures(AppState* app) {
-    for (int i = 0; i < CELL_MAX; i++) {
-        if (app->cell_textures[i]) {
-            SDL_DestroyTexture(app->cell_textures[i]);
-            app->cell_textures[i] = NULL;
-        }
-    }
-    
-    if (app->player_texture) {
-        SDL_DestroyTexture(app->player_texture);
-        app->player_texture = NULL;
-    }
-    
-    if (app->grid_lines_texture) {
-        SDL_DestroyTexture(app->grid_lines_texture);
-        app->grid_lines_texture = NULL;
-    }
-    
-    if (app->render_target) {
-        SDL_DestroyTexture(app->render_target);
-        app->render_target = NULL;
+    if (app->background_texture) {
+        SDL_DestroyTexture(app->background_texture);
+        app->background_texture = NULL;
     }
 }
 
@@ -725,43 +589,40 @@ static void destroy_textures(AppState* app) {
  * Game Logic Functions
  */
 
-/* Initialize the game state with bit operations */
+/* Initialize the game state */
 static void init_game(GameState* game) {
-    /* Zero out the grid with 64-bit operations for speed */
-    uint64_t* grid_64 = (uint64_t*)game->grid;
-    for (size_t i = 0; i < GRID_BYTES / 8; i++) {
-        grid_64[i] = 0ULL;
-    }
+    /* Clear the grid */
+    memset(game->grid, CELL_EMPTY, GRID_SIZE);
     
-    /* Add walls for a simple maze using bit operations */
+    /* Add walls for a simple maze */
     
     /* Outer walls */
     for (int i = 0; i < GRID_WIDTH; i++) {
-        set_cell_bit(game, i, 0, CELL_WALL);              /* Top wall */
-        set_cell_bit(game, i, GRID_HEIGHT - 1, CELL_WALL); /* Bottom wall */
+        set_cell(game, i, 0, CELL_WALL);              /* Top wall */
+        set_cell(game, i, GRID_HEIGHT - 1, CELL_WALL); /* Bottom wall */
     }
     
     /* Inner walls for testing */
     for (int x = 10; x < 20; x++) {
-        set_cell_bit(game, x, 10, CELL_WALL);
-        set_cell_bit(game, x + 20, 15, CELL_WALL);
+        set_cell(game, x, 10, CELL_WALL);
+        set_cell(game, x + 20, 15, CELL_WALL);
     }
     
     /* Add corner testing area */
     for (int y = 20; y < 25; y++) {
-        set_cell_bit(game, 10, y, CELL_WALL);
-        set_cell_bit(game, 20, y, CELL_WALL);
+        set_cell(game, 10, y, CELL_WALL);
+        set_cell(game, 20, y, CELL_WALL);
     }
     for (int x = 11; x < 20; x++) {
-        set_cell_bit(game, x, 20, CELL_WALL);
+        set_cell(game, x, 20, CELL_WALL);
     }
     
     /* Add some items for collection */
     for (int i = 0; i < 40; i++) {
         int x = rand() & GRID_WIDTH_MASK;  /* Random x (0-63) */
         int y = rand() & GRID_HEIGHT_MASK; /* Random y (0-31) */
-        if (get_cell_bit(game, x, y) == CELL_EMPTY) {
-            set_cell_bit(game, x, y, CELL_ITEM);
+        if (get_cell(game, x, y) == CELL_EMPTY) {
+            set_cell(game, x, y, CELL_ITEM);
         }
     }
     
@@ -770,13 +631,19 @@ static void init_game(GameState* game) {
     game->player.pos_y = GRID_HEIGHT >> 1;  /* Center Y (16) */
     game->player.target_x = game->player.pos_x;
     game->player.target_y = game->player.pos_y;
-    game->player.state_flags = 0;  /* Not moving, no direction */
+    game->player.direction = DIR_NONE;
+    game->player.is_moving = false;
+    game->player.just_started = false;
     game->player.move_frame = 0;
     
-    /* Reset input state using direct assignment instead of bitwise ops for initialization */
+    /* Reset input state */
     game->input.key_states = 0;
     game->input.current_dir = DIR_NONE;
     game->input.buffered_dir = DIR_NONE;
+    
+    /* Reset grid state */
+    game->grid_state.cells_changed = true;
+    game->grid_state.last_frame_updated = 0;
     
     /* Reset timing */
     game->last_tick_time = SDL_GetTicks();
@@ -784,11 +651,11 @@ static void init_game(GameState* game) {
     game->frame_count = 0;
 }
 
-/* Process key press/release using bit operations */
+/* Process key press/release */
 static void process_key_event(InputState* input, SDL_Scancode key, bool pressed) {
     Direction dir = DIR_NONE;
     
-    /* Map keyboard to direction - classic switch-case avoidance technique */
+    /* Map keyboard to direction */
     dir = (key == SDL_SCANCODE_RIGHT) ? DIR_RIGHT :
     (key == SDL_SCANCODE_UP)    ? DIR_UP :
     (key == SDL_SCANCODE_LEFT)  ? DIR_LEFT :
@@ -823,7 +690,7 @@ static void process_key_event(InputState* input, SDL_Scancode key, bool pressed)
     }
 }
 
-/* Efficient gamepad state polling with bit operations */
+/* Efficient gamepad state polling */
 static void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad) {
     if (!gamepad) return;
     
@@ -884,7 +751,7 @@ static void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad) {
     }
 }
 
-/* Update game logic with fixed time step and bit operations */
+/* Update game logic with fixed time step */
 static void update_game_logic_fixed_step(GameState* game) {
     MovementState* movement = &game->player;
     InputState* input = &game->input;
@@ -900,7 +767,7 @@ static void update_game_logic_fixed_step(GameState* game) {
     game->frame_count++;
     
     /* If not moving, check for direction input to start movement */
-    if (!is_moving(movement)) {
+    if (!movement->is_moving) {
         /* Try to move in current input direction */
         if (input->current_dir != DIR_NONE) {
             start_movement(game, input->current_dir);
@@ -932,13 +799,13 @@ static void update_game_logic_fixed_step(GameState* game) {
     }
     
     /* Clear the just started moving flag after first frame */
-    if (just_started_moving(movement)) {
-        set_just_started(movement, false);
+    if (movement->just_started) {
+        movement->just_started = false;
     }
 }
 
 /*
- * Rendering Functions with Texture-Based Optimizations
+ * Rendering Functions
  */
 
 /* Configure renderer for proper scaling */
@@ -964,64 +831,85 @@ static void set_time_scale(AppState* app, uint8_t scale_index) {
     app->app_flags = (app->app_flags & ~APP_TIME_SCALE) | ((scale_index & 0x3) << APP_TS_SHIFT);
 }
 
-/* Optimized render function using textures */
+/* Calculate and display FPS */
+static void update_fps(AppState* app) {
+    app->fps_count++;
+    
+    uint64_t current_time = SDL_GetTicks();
+    if (current_time - app->last_fps_time >= 1000) {
+        app->current_fps = app->fps_count;
+        app->fps_count = 0;
+        app->last_fps_time = current_time;
+        
+        char title[64];
+        snprintf(title, sizeof(title), "Bit-Twiddled Game Engine - FPS: %d", app->current_fps);
+        SDL_SetWindowTitle(app->window, title);
+    }
+}
+
+/* Simplified render function */
 static void render_game(AppState* app) {
     GameState* game = &app->game;
     SDL_Renderer* renderer = app->renderer;
     
-    /* Set render target to our texture */
-    SDL_SetRenderTarget(renderer, app->render_target);
-    
-    /* Clear the render target */
+    /* Clear the screen */
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
     
-    /* Render grid using batch texturing */
-    SDL_FRect dest_rect = { 0, 0, PIXEL_SCALE, PIXEL_SCALE };
+    /* 1. Render the background (walls and grid lines) */
+    if (app->background_texture) {
+        SDL_RenderTexture(renderer, app->background_texture, NULL, NULL);
+    }
     
-    /* We'll attempt to batch similar cells together for efficiency */
-    CellType last_type = CELL_MAX; /* Invalid to force first switch */
+    /* 2. Render items */
+    SDL_FRect rect = { 0, 0, PIXEL_SCALE, PIXEL_SCALE };
+    SDL_SetRenderDrawColor(renderer,
+                           CELL_COLORS[CELL_ITEM].r,
+                           CELL_COLORS[CELL_ITEM].g,
+                           CELL_COLORS[CELL_ITEM].b,
+                           CELL_COLORS[CELL_ITEM].a);
     
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            CellType cell = get_cell_bit(game, x, y);
-            
-            /* Skip empty cells for efficiency */
-            if (cell == CELL_EMPTY) continue;
-            
-            /* Calculate destination rectangle */
-            dest_rect.x = (float)(x * PIXEL_SCALE);
-            dest_rect.y = (float)(y * PIXEL_SCALE);
-            
-            /* Switch texture if needed */
-            if (cell != last_type) {
-                last_type = cell;
+            if (get_cell(game, x, y) == CELL_ITEM) {
+                /* Create smaller rectangle for item */
+                rect.x = x * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
+                rect.y = y * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
+                rect.w = rect.h = PIXEL_SCALE * 0.5f;
+                
+                SDL_RenderFillRect(renderer, &rect);
+                
+                /* Reset rectangle size */
+                rect.w = rect.h = PIXEL_SCALE;
             }
-            
-            /* Render the cell */
-            SDL_RenderTexture(renderer, app->cell_textures[cell], NULL, &dest_rect);
         }
     }
     
-    /* Render grid lines */
-    SDL_RenderTexture(renderer, app->grid_lines_texture, NULL, NULL);
-    
-    /* Render player */
+    /* 3. Render player */
     float visual_x, visual_y;
     get_visual_position(&game->player, &visual_x, &visual_y);
     
-    dest_rect.x = visual_x * PIXEL_SCALE;
-    dest_rect.y = visual_y * PIXEL_SCALE;
-    SDL_RenderTexture(renderer, app->player_texture, NULL, &dest_rect);
+    rect.x = visual_x * PIXEL_SCALE;
+    rect.y = visual_y * PIXEL_SCALE;
+    rect.w = rect.h = PIXEL_SCALE;
     
-    /* Switch back to default render target (window) */
-    SDL_SetRenderTarget(renderer, NULL);
-    
-    /* Render the entire scene in one draw call */
-    SDL_RenderTexture(renderer, app->render_target, NULL, NULL);
+    SDL_SetRenderDrawColor(renderer,
+                           PLAYER_COLOR.r,
+                           PLAYER_COLOR.g,
+                           PLAYER_COLOR.b,
+                           PLAYER_COLOR.a);
+    SDL_RenderFillRect(renderer, &rect);
     
     /* Present the rendered frame */
     SDL_RenderPresent(renderer);
+    
+    /* Update FPS counter */
+    update_fps(app);
+    
+    /* Check if we need to update background texture due to grid changes */
+    if (game->grid_state.cells_changed) {
+        create_background_texture(app);
+    }
 }
 
 /*
@@ -1131,14 +1019,19 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     /* Configure rendering */
     configure_rendering(app);
     
-    /* Create textures */
+    /* Initialize game state first */
+    init_game(&app->game);
+    
+    /* Create textures (needs initialized game state) */
     create_textures(app);
     
     /* Initialize gamepad */
     initialize_gamepad(app);
     
-    /* Initialize game state */
-    init_game(&app->game);
+    /* Initialize FPS counter */
+    app->last_fps_time = SDL_GetTicks();
+    app->fps_count = 0;
+    app->current_fps = 0;
     
     /* Seed random number generator */
     srand((unsigned int)SDL_GetTicks());
@@ -1205,7 +1098,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     return SDL_APP_CONTINUE;
 }
 
-/* Process SDL events with bit operations where possible */
+/* Process SDL events */
 SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
     AppState* app = (AppState*)appstate;
     GameState* game = &app->game;
