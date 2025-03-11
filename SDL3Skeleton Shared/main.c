@@ -1,29 +1,18 @@
 /*
- * SDL3 Game Skeleton with Deterministic Movement
+ * Bit-Twiddled Classic Game Engine (FIXED)
  *
- * This implementation follows the philosophy of classic arcade games like Pac-Man
- * and modern grid-based games that utilize fixed time steps for deterministic
- * movement. This approach guarantees that visual representation and logical game
- * state remain perfectly synchronized, producing fluid and predictable motion.
+ * This implementation embraces classic game optimization techniques used in 8-bit
+ * and 16-bit era games, while ensuring:
+ * 1. Proper display of the full 64×32 grid
+ * 2. Smooth, consistent animation between tiles
+ * 3. Correct screen wrapping calculations
  *
- * FIXED TIME STEP METHODOLOGY
- * ---------------------------
- * Unlike modern variable time-step approaches that separate animation from logic,
- * classic arcade games used a fixed time step where:
- *
- * 1. The game world updates at a constant, known frequency
- * 2. Movement takes a precise, countable number of frames to complete
- * 3. Animation positions are directly computed from the current frame number
- * 4. Logic and rendering are perfectly synchronized by design
- *
- * This approach yields significant benefits:
- * - Deterministic, reproducible behavior
- * - Perfect visual fluidity with no "hitching" between tiles
- * - Simplified collision detection that remains visually coherent
- * - More predictable gameplay for both developers and players
- *
- * The implementation below follows these principles while leveraging modern
- * language features and organization for clearer code structure.
+ * Key techniques implemented:
+ * 1. Bit-packed grid (2 bits per cell = 4 cells per byte)
+ * 2. Power-of-two dimensions (64×32) for shift operations instead of multiplication
+ * 3. Input state packed into individual bits
+ * 4. Movement state using bit flags instead of separate booleans
+ * 5. Fixed time step with frame counting for deterministic animation
  */
 
 #define SDL_MAIN_USE_CALLBACKS 1
@@ -37,325 +26,289 @@
 #include "main.h"
 
 /*
- * Game Configuration
- *
- * DESIGN PHILOSOPHY FOR TIMING CONSTANTS
- * --------------------------------------
- * The timing values below create a deterministic relationship between logic ticks
- * and animation. By defining a specific number of ticks for each tile transition,
- * we ensure perfect synchronization between what the game "thinks" is happening
- * and what the player sees.
- *
- * This approach mirrors how classic arcade games like Pac-Man implemented movement.
- * For example, in the original Pac-Man:
- * - The game ran at 60 frames per second
- * - Character movement took exactly 8 frames to move between tiles
- * - Position was computed as: start_pos + (end_pos - start_pos) * (current_frame / 8)
- *
- * We use the same principle here, with configurable values for flexibility.
+ * Grid Configuration With Power-of-Two Dimensions
  */
-#define LOGIC_TICK_RATE        60   /* Game logic updates per second */
-#define FRAMES_PER_TILE        12   /* Number of logic ticks to move one tile */
-#define CORNER_BUFFER_FRAMES   3    /* Frames before tile end to accept corner input */
+#define GRID_WIDTH          64      /* Must be power of 2 for bit shifts */
+#define GRID_HEIGHT         32      /* Must be power of 2 for bit shifts */
+#define GRID_WIDTH_SHIFT    6       /* log2(64) = 6, used for shifting */
+#define GRID_HEIGHT_MASK    0x1F    /* 2^5 - 1 = 31, masks lower 5 bits */
+#define GRID_WIDTH_MASK     0x3F    /* 2^6 - 1 = 63, masks lower 6 bits */
+#define GRID_SIZE           (GRID_WIDTH * GRID_HEIGHT)
+#define CELLS_PER_BYTE      4       /* 4 cells (2 bits each) per byte */
+#define GRID_BYTES          (GRID_SIZE / CELLS_PER_BYTE)  /* 512 bytes total */
 
-/* Derived timing constants */
-#define LOGIC_TICK_MS         (1000 / LOGIC_TICK_RATE) /* Milliseconds per logic tick */
-#define SECONDS_PER_TILE      ((float)FRAMES_PER_TILE / LOGIC_TICK_RATE) /* Time to move one tile */
+/* Display configuration (showing full grid) */
+#define PIXEL_SCALE         12      /* Screen pixels per grid cell */
+#define WINDOW_WIDTH        (GRID_WIDTH * PIXEL_SCALE)    /* Show full grid width */
+#define WINDOW_HEIGHT       (GRID_HEIGHT * PIXEL_SCALE)   /* Show full grid height */
 
-/* Tile and grid configuration */
-#define BLOCK_SIZE             48   /* Size of each block (cell) in pixels */
-#define GRID_WIDTH             24   /* Width of the game grid in blocks */
-#define GRID_HEIGHT            14   /* Height of the game grid in blocks */
-#define GRID_SIZE              (GRID_WIDTH * GRID_HEIGHT)
-#define WINDOW_WIDTH           (BLOCK_SIZE * GRID_WIDTH)
-#define WINDOW_HEIGHT          (BLOCK_SIZE * GRID_HEIGHT)
+/* Game timing configuration */
+#define LOGIC_TICK_RATE     60      /* Game logic updates per second */
+#define FRAMES_PER_TILE     3      /* Frames to move one tile */
+#define LOGIC_TICK_MS       (1000 / LOGIC_TICK_RATE)
+#define CORNER_BUFFER_FRAMES 2      /* Frames before tile end to accept corner input */
 
-/* Cell types stored in the grid */
+/* Cell types stored in 2 bits per cell */
 typedef enum {
-    CELL_EMPTY = 0,
-    CELL_WALL = 1,
-    CELL_ITEM = 2
+    CELL_EMPTY = 0,  /* 00 binary */
+    CELL_WALL  = 1,  /* 01 binary */
+    CELL_ITEM  = 2,  /* 10 binary */
+    CELL_MAX   = 3   /* 11 binary - Unused, but needed for 2-bit mask */
 } CellType;
 
-/* Movement direction
- *
- * DIRECTION ENCODING METHODOLOGY
- * -----------------------------
- * We encode directions as integers from -1 to 3, where:
- * - DIR_NONE (-1) represents no movement
- * - The four cardinal directions (0-3) are arranged in a way that opposite
- *   directions differ by exactly 2
- *
- * This encoding enables efficient operations like:
- * - Checking if directions are opposite: abs(dir1 - dir2) == 2
- * - Reverse direction: (dir + 2) % 4
- *
- * This approach was common in classic arcade games for compact storage and
- * efficient direction-based logic processing.
- */
+/* Movement direction encoding */
 typedef enum {
-    DIR_NONE = -1, /* Not moving */
-    DIR_RIGHT = 0,
-    DIR_UP = 1,
-    DIR_LEFT = 2,
-    DIR_DOWN = 3,
+    DIR_NONE  = 0xFF, /* No direction - using 0xFF instead of -1 for unsigned math */
+    DIR_RIGHT = 0,    /* 00 binary */
+    DIR_UP    = 1,    /* 01 binary */
+    DIR_LEFT  = 2,    /* 10 binary */
+    DIR_DOWN  = 3,    /* 11 binary */
     DIR_COUNT = 4
 } Direction;
 
-/*
- * Input State
- *
- * DECOUPLED INPUT PROCESSING
- * --------------------------
- * The input state captures raw player intent without directly modifying game state.
- * This separation of input detection from game state modification follows good
- * software design principles and allows for:
- * - Input buffering for responsive controls
- * - Direction prioritization when multiple keys are pressed
- * - Clean handling of key release events
- *
- * This structure purely tracks player intention, which the game logic then
- * interprets and applies based on the current game state.
- */
+/* Bit flags for input state */
+#define KEY_RIGHT       0x01
+#define KEY_UP          0x02
+#define KEY_LEFT        0x04
+#define KEY_DOWN        0x08
+#define HAS_BUFFERED    0x10
+#define RESTART_REQ     0x20
+
+/* Bit flags for movement state */
+#define MOVE_IS_MOVING     0x01
+#define MOVE_JUST_STARTED  0x02
+#define MOVE_DIR_MASK      0x1C    /* Bits 2-4 for direction (0-4) */
+#define MOVE_DIR_SHIFT     2       /* Shift amount to get direction */
+
+/* Bit-packed input state (3 bytes) */
 typedef struct {
-    bool direction_keys[DIR_COUNT];  /* Currently held direction keys */
-    Direction current_dir;           /* Currently active direction */
-    Direction buffered_dir;          /* Direction queued for next intersection */
-    bool has_buffered_dir;           /* Whether we have a buffered direction */
-    bool restart_requested;          /* Whether player requested game restart */
+    uint8_t key_states;        /* Bit 0-3: direction keys, 4: has_buffered, 5: restart */
+    uint8_t current_dir;       /* Current direction (0-3, 255 for none) */
+    uint8_t buffered_dir;      /* Buffered direction (0-3, 255 for none) */
 } InputState;
 
-/*
- * Movement State
- *
- * DETERMINISTIC MOVEMENT TRACKING
- * ------------------------------
- * This structure manages the logical grid-based movement of an entity.
- * It tracks both current position and target position, along with a frame
- * counter that precisely measures progress between tiles.
- *
- * Unlike variable time step approaches that use percentages or time-based
- * progress, this approach counts discrete frames. This creates perfectly
- * deterministic movement where:
- * - Each tile transition takes exactly FRAMES_PER_TILE frames
- * - Position can be calculated precisely for any frame number
- * - Collision detection happens at predictable, exact moments
- *
- * This mirrors how classic arcade games implemented movement, where complex
- * physics calculations were replaced by simple, frame-based state machines.
- */
+/* Bit-packed movement state (6 bytes) */
 typedef struct {
-    int x;                           /* Current grid X position */
-    int y;                           /* Current grid Y position */
-    Direction dir;                   /* Current movement direction */
-    bool is_moving;                  /* Whether entity is currently moving */
-    int target_x;                    /* Target grid X position */
-    int target_y;                    /* Target grid Y position */
-    int move_frame;                  /* Current frame in movement animation (0 to FRAMES_PER_TILE-1) */
-    bool just_started_moving;        /* Flag to track new movement initiation */
+    uint8_t pos_x;            /* Current X (0-63) */
+    uint8_t pos_y;            /* Current Y (0-31) */
+    uint8_t target_x;         /* Target X (0-63) */
+    uint8_t target_y;         /* Target Y (0-31) */
+    uint8_t state_flags;      /* Bit 0: is_moving, 1: just_started, 2-4: direction */
+    uint8_t move_frame;       /* Current frame (0-11) */
 } MovementState;
 
-/*
- * Game State
- *
- * CONTIGUOUS MEMORY LAYOUT
- * -----------------------
- * The game state is organized to maximize cache efficiency and minimize
- * memory fragmentation. By using contiguous arrays for grid storage and
- * keeping related data together, we improve cache locality and memory
- * access patterns.
- *
- * Classic arcade games were extremely memory-conscious due to hardware
- * limitations, often using bit-packing and careful data layout to maximize
- * efficiency. While modern systems have fewer constraints, these principles
- * still yield better performance.
- */
+/* Game State */
 typedef struct {
-    /* Game grid: flat array of cells for cache-friendly access */
-    CellType grid[GRID_SIZE];
-    
-    /* Player state */
-    MovementState player_movement;
-    
-    /* Input state */
-    InputState input;
-    
-    /* Timing */
-    Uint64 last_tick_time;           /* Time of last logic tick */
-    int accumulated_time;            /* Time accumulated since last tick (ms) */
-    Uint64 frame_count;              /* Total number of logic frames executed */
+    uint8_t grid[GRID_BYTES];      /* Bit-packed grid: 2 bits per cell, 4 cells per byte */
+    MovementState player;          /* Player movement state */
+    InputState input;              /* Input state */
+    uint32_t frame_count;          /* Total frames executed (32-bit counter) */
+    uint16_t accumulated_time;     /* Accumulated time since last tick (ms) */
+    uint32_t last_tick_time;       /* Time of last logic tick */
 } GameState;
 
-/*
- * Application State
- *
- * This structure contains the high-level application state, including SDL resources
- * and the game state.
- */
+/* Application State */
 typedef struct {
     SDL_Window* window;
     SDL_Renderer* renderer;
     SDL_Gamepad* gamepad;
     SDL_JoystickID gamepad_id;
     GameState game;
-    bool fullscreen;
-    float time_scale;                /* Time scaling factor for debugging (1.0 = normal) */
+    uint8_t app_flags;             /* Bit 0: fullscreen, 1-2: time scale */
 } AppState;
 
-/*
- * Function Declarations
- */
+/* Pre-computed lookup tables for movement */
+static const int8_t DIR_OFFSET_X[4] = {1, 0, -1, 0};   /* RIGHT, UP, LEFT, DOWN */
+static const int8_t DIR_OFFSET_Y[4] = {0, -1, 0, 1};   /* RIGHT, UP, LEFT, DOWN */
+
+/* Function declarations */
 static void init_game(GameState* game);
-static void process_key_press(InputState* input, SDL_Scancode key, bool pressed);
-static void process_gamepad_button(InputState* input, SDL_GamepadButton button, bool pressed);
 static void update_game_logic_fixed_step(GameState* game);
+static void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad);
+static void process_key_event(InputState* input, SDL_Scancode key, bool pressed);
 static void render_game(AppState* app);
-static void toggle_fullscreen(AppState* app);
-static void initialize_gamepad(AppState* app);
 
 /*
- * Grid Utility Functions
+ * Bit-Manipulating Grid Functions
  */
 
-/* Convert 2D grid coordinates to 1D array index
- *
- * ROW-MAJOR MEMORY LAYOUT
- * ----------------------
- * We use a row-major layout where grid[y*width + x] gives the cell at (x,y).
- * This creates better cache locality when accessing cells in row order, as
- * adjacent cells in a row are adjacent in memory.
- *
- * Classic games often used this layout for efficient memory access patterns,
- * and modern CPUs still benefit from this approach due to cache line loading.
- */
-static inline int grid_index(int x, int y) {
-    return y * GRID_WIDTH + x;
-}
-
-/* Get cell type at grid position with bounds checking
- *
- * TOROIDAL GRID WRAPPING
- * ---------------------
- * This function implements a toroidal (donut-shaped) world where moving off
- * one edge brings you back from the opposite edge. This is accomplished using
- * modulo arithmetic to wrap coordinates.
- *
- * This approach was used in many classic arcade games like Pac-Man, creating
- * a world that feels larger than it actually is by seamlessly wrapping edges.
- */
-static CellType get_cell(const GameState* game, int x, int y) {
-    /* Handle wrapping around grid edges using modulo arithmetic */
-    x = (x + GRID_WIDTH) % GRID_WIDTH;
-    y = (y + GRID_HEIGHT) % GRID_HEIGHT;
+/* Get cell with bit operations */
+static CellType get_cell_bit(const GameState* game, int x, int y) {
+    /* Mask coordinates to ensure they wrap properly */
+    x &= GRID_WIDTH_MASK;
+    y &= GRID_HEIGHT_MASK;
     
-    return game->grid[grid_index(x, y)];
-}
-
-/* Set cell type at grid position with bounds checking */
-static void set_cell(GameState* game, int x, int y, CellType type) {
-    /* Handle wrapping around grid edges */
-    x = (x + GRID_WIDTH) % GRID_WIDTH;
-    y = (y + GRID_HEIGHT) % GRID_HEIGHT;
+    /* Calculate flat index with bit shifts */
+    int idx = (y << GRID_WIDTH_SHIFT) | x;
     
-    game->grid[grid_index(x, y)] = type;
+    /* Find byte and position within byte */
+    int byte_idx = idx >> 2;               /* Divide by 4 (cells per byte) */
+    int bit_pos = (idx & 3) << 1;          /* Position within byte (multiply by 2 bits per cell) */
+    
+    /* Extract and return the 2-bit cell value */
+    return (CellType)((game->grid[byte_idx] >> bit_pos) & 0x3);
 }
 
-/* Check if a movement in given direction is valid
- *
- * COLLISION DETECTION PRINCIPLES
- * ----------------------------
- * This function performs simple grid-based collision detection by checking
- * if the target cell is empty or contains an item. This approach is
- * deterministic and easily understood, avoiding complex collision shapes
- * or physics calculations.
- *
- * Classic arcade games used this approach because:
- * 1. It's computationally efficient (important on limited hardware)
- * 2. It creates clear, predictable gameplay rules
- * 3. It maps cleanly to the grid-based visual representation
+/* Set cell with bit operations */
+static void set_cell_bit(GameState* game, int x, int y, CellType type) {
+    /* Mask coordinates to ensure they wrap properly */
+    x &= GRID_WIDTH_MASK;
+    y &= GRID_HEIGHT_MASK;
+    
+    /* Calculate flat index with bit shifts */
+    int idx = (y << GRID_WIDTH_SHIFT) | x;
+    
+    /* Find byte and position within byte */
+    int byte_idx = idx >> 2;               /* Divide by 4 (cells per byte) */
+    int bit_pos = (idx & 3) << 1;          /* Position within byte (2 bits per cell) */
+    
+    /* Clear the 2 bits for this cell */
+    uint8_t mask = ~(0x3 << bit_pos);      /* Create mask to clear the bits */
+    
+    /* Set the new cell value */
+    game->grid[byte_idx] = (game->grid[byte_idx] & mask) | ((type & 0x3) << bit_pos);
+}
+
+/*
+ * Input State Functions with Bit Operations
  */
+
+/* Check if a direction key is pressed using bit operations */
+static inline bool is_key_pressed(const InputState* input, Direction dir) {
+    return (input->key_states & (1 << dir)) != 0;
+}
+
+/* Set key state with bit operations */
+static inline void set_key_state(InputState* input, Direction dir, bool pressed) {
+    input->key_states = (input->key_states & ~(1 << dir)) | (pressed << dir);
+}
+
+/* Check if buffered direction is set */
+static inline bool has_buffered_dir(const InputState* input) {
+    return (input->key_states & HAS_BUFFERED) != 0;
+}
+
+/* Set buffered direction flag */
+static inline void set_has_buffered(InputState* input, bool has_buffered) {
+    input->key_states = (input->key_states & ~HAS_BUFFERED) | (has_buffered ? HAS_BUFFERED : 0);
+}
+
+/* Check if restart is requested */
+static inline bool is_restart_requested(const InputState* input) {
+    return (input->key_states & RESTART_REQ) != 0;
+}
+
+/* Set restart requested flag */
+static inline void set_restart_requested(InputState* input, bool requested) {
+    input->key_states = (input->key_states & ~RESTART_REQ) | (requested ? RESTART_REQ : 0);
+}
+
+/*
+ * Movement State Functions with Bit Operations
+ */
+
+/* Check if entity is moving */
+static inline bool is_moving(const MovementState* movement) {
+    return (movement->state_flags & MOVE_IS_MOVING) != 0;
+}
+
+/* Set moving state */
+static inline void set_moving(MovementState* movement, bool moving) {
+    movement->state_flags = (movement->state_flags & ~MOVE_IS_MOVING) | (moving ? MOVE_IS_MOVING : 0);
+}
+
+/* Check if movement just started */
+static inline bool just_started_moving(const MovementState* movement) {
+    return (movement->state_flags & MOVE_JUST_STARTED) != 0;
+}
+
+/* Set just started moving flag */
+static inline void set_just_started(MovementState* movement, bool just_started) {
+    movement->state_flags = (movement->state_flags & ~MOVE_JUST_STARTED) |
+    (just_started ? MOVE_JUST_STARTED : 0);
+}
+
+/* Get current direction */
+static inline Direction get_direction(const MovementState* movement) {
+    uint8_t dir_bits = (movement->state_flags & MOVE_DIR_MASK) >> MOVE_DIR_SHIFT;
+    return dir_bits ? (Direction)(dir_bits - 1) : DIR_NONE;
+}
+
+/* Set current direction */
+static inline void set_direction(MovementState* movement, Direction dir) {
+    movement->state_flags = (movement->state_flags & ~MOVE_DIR_MASK) |
+    ((dir == DIR_NONE ? 0 : dir + 1) << MOVE_DIR_SHIFT);
+}
+
+/*
+ * Movement Functions
+ */
+
+/* Check if a move is valid */
 static bool is_valid_move(const GameState* game, int x, int y, Direction dir) {
-    if (dir == DIR_NONE) {
-        return false;
-    }
+    /* Quick check if direction is valid */
+    if (dir >= DIR_COUNT) return false;
     
-    /* Calculate target position */
-    int target_x = x;
-    int target_y = y;
+    /* Calculate target position - bit magic to handle wrapping */
+    int target_x = (x + DIR_OFFSET_X[dir]) & GRID_WIDTH_MASK;
+    int target_y = (y + DIR_OFFSET_Y[dir]) & GRID_HEIGHT_MASK;
     
-    switch (dir) {
-        case DIR_RIGHT: target_x = (x + 1) % GRID_WIDTH; break;
-        case DIR_UP:    target_y = (y - 1 + GRID_HEIGHT) % GRID_HEIGHT; break;
-        case DIR_LEFT:  target_x = (x - 1 + GRID_WIDTH) % GRID_WIDTH; break;
-        case DIR_DOWN:  target_y = (y + 1) % GRID_HEIGHT; break;
-        default: return false; /* Invalid direction */
-    }
+    /* Check if target cell is empty or an item */
+    CellType target_cell = get_cell_bit(game, target_x, target_y);
     
-    /* Check if target cell is empty or contains an item */
-    CellType target_cell = get_cell(game, target_x, target_y);
+    /* Return true if not a wall */
     return target_cell != CELL_WALL;
 }
 
-/* Get target position for movement in given direction */
+/* Get target position using lookup table */
 static void get_target_position(int x, int y, Direction dir, int* target_x, int* target_y) {
-    *target_x = x;
-    *target_y = y;
-    
-    switch (dir) {
-        case DIR_RIGHT: *target_x = (x + 1) % GRID_WIDTH; break;
-        case DIR_UP:    *target_y = (y - 1 + GRID_HEIGHT) % GRID_HEIGHT; break;
-        case DIR_LEFT:  *target_x = (x - 1 + GRID_WIDTH) % GRID_WIDTH; break;
-        case DIR_DOWN:  *target_y = (y + 1) % GRID_HEIGHT; break;
-        default: break; /* No movement */
-    }
+    *target_x = (x + DIR_OFFSET_X[dir]) & GRID_WIDTH_MASK;
+    *target_y = (y + DIR_OFFSET_Y[dir]) & GRID_HEIGHT_MASK;
 }
 
-/* Check if two directions are opposite
- *
- * EFFICIENT DIRECTION COMPARISON
- * ----------------------------
- * This function exploits the numerical encoding of directions to efficiently
- * determine if two directions are opposite. Since opposite directions differ
- * by exactly 2 in our encoding, a simple arithmetic check is sufficient.
- *
- * This is more efficient than a switch statement or multiple comparisons,
- * and was a common optimization in classic games with limited CPU resources.
- */
+/* Check if directions are opposite using bit operations */
 static bool are_directions_opposite(Direction dir1, Direction dir2) {
-    if (dir1 == DIR_NONE || dir2 == DIR_NONE) {
-        return false;
-    }
-    return abs(dir1 - dir2) == 2;
+    /* If either direction is NONE, they're not opposite */
+    if (dir1 == DIR_NONE || dir2 == DIR_NONE) return false;
+    
+    /* Directions are opposite if they differ by 2 (when 2-bit values) */
+    return ((dir1 ^ dir2) == 2);
 }
 
-/*
- * Animation Utility Functions
- */
+/* Start Movement Using Bit Operations */
+static bool start_movement(GameState* game, Direction dir) {
+    MovementState* movement = &game->player;
+    
+    /* Check if direction is valid */
+    if (dir == DIR_NONE) return false;
+    
+    /* Check if the move is valid */
+    int target_x, target_y;
+    get_target_position(movement->pos_x, movement->pos_y, dir, &target_x, &target_y);
+    
+    CellType target_cell = get_cell_bit(game, target_x, target_y);
+    bool can_move = (target_cell != CELL_WALL);
+    
+    /* If we can't move, return false */
+    if (!can_move) return false;
+    
+    /* Update movement state */
+    movement->target_x = target_x;
+    movement->target_y = target_y;
+    set_direction(movement, dir);
+    set_moving(movement, true);
+    set_just_started(movement, true);
+    movement->move_frame = 0;
+    
+    return true;
+}
 
-/* Calculate visual position based on movement state
- *
- * DETERMINISTIC VISUAL INTERPOLATION
- * --------------------------------
- * This function computes the exact visual position of an entity based on:
- * 1. The current grid position
- * 2. The target grid position
- * 3. The current frame in the movement animation
- *
- * Unlike variable time step approaches that can create inconsistent animation,
- * this frame-based approach ensures that movement always looks identical and
- * predictable, with perfect synchronization between logic and visuals.
- *
- * The linear interpolation formula calculates position as:
- *    visual_pos = start_pos + (target_pos - start_pos) * (current_frame / total_frames)
- *
- * This matches how classic arcade games calculated visual positions, ensuring
- * smooth, reproducible movement without relying on delta time.
- */
+/* Calculate visual position based on movement state - FIXED WRAPPING CALCULATION */
 static void get_visual_position(const MovementState* movement, float* visual_x, float* visual_y) {
-    if (!movement->is_moving || movement->move_frame >= FRAMES_PER_TILE) {
+    if (!is_moving(movement) || movement->move_frame >= FRAMES_PER_TILE) {
         /* Not moving or movement complete - use exact grid position */
-        *visual_x = (float)movement->x;
-        *visual_y = (float)movement->y;
+        *visual_x = (float)movement->pos_x;
+        *visual_y = (float)movement->pos_y;
         return;
     }
     
@@ -363,17 +316,20 @@ static void get_visual_position(const MovementState* movement, float* visual_x, 
     float t = (float)movement->move_frame / FRAMES_PER_TILE;
     
     /* Start position */
-    float start_x = (float)movement->x;
-    float start_y = (float)movement->y;
+    float start_x = (float)movement->pos_x;
+    float start_y = (float)movement->pos_y;
     
     /* Target position */
     float target_x = (float)movement->target_x;
     float target_y = (float)movement->target_y;
     
-    /* Handle screen wrapping for smooth animation */
-    if (abs(movement->target_x - movement->x) > 1) {
-        /* Wrapping horizontally */
-        if (movement->target_x < movement->x) {
+    /* FIXED: Use proper distance check for wrapping detection */
+    
+    /* Check if wrapping horizontally */
+    int dx = abs((int)movement->target_x - (int)movement->pos_x);
+    if (dx > GRID_WIDTH/2) {
+        /* We're wrapping around the edge */
+        if (movement->target_x < movement->pos_x) {
             /* Moving right to left across the edge */
             target_x += GRID_WIDTH;
         } else {
@@ -382,9 +338,11 @@ static void get_visual_position(const MovementState* movement, float* visual_x, 
         }
     }
     
-    if (abs(movement->target_y - movement->y) > 1) {
-        /* Wrapping vertically */
-        if (movement->target_y < movement->y) {
+    /* Check if wrapping vertically */
+    int dy = abs((int)movement->target_y - (int)movement->pos_y);
+    if (dy > GRID_HEIGHT/2) {
+        /* We're wrapping around the edge */
+        if (movement->target_y < movement->pos_y) {
             /* Moving bottom to top across the edge */
             target_y += GRID_HEIGHT;
         } else {
@@ -406,94 +364,47 @@ static void get_visual_position(const MovementState* movement, float* visual_x, 
     if (*visual_y < 0) *visual_y += GRID_HEIGHT;
 }
 
-/*
- * Movement Functions
- */
-
-/* Start movement in a given direction if possible
- *
- * MOVEMENT INITIATION PRINCIPLES
- * ----------------------------
- * This function initiates movement in the desired direction if possible.
- * It sets up both the logical destination and resets the frame counter
- * that will track progress toward that destination.
- *
- * The movement system uses a frame counter rather than a time-based
- * approach, ensuring that movement always takes exactly FRAMES_PER_TILE
- * frames to complete, creating predictable, consistent motion.
- */
-static bool start_movement(GameState* game, Direction dir) {
-    MovementState* movement = &game->player_movement;
-    
-    /* Validate the direction */
-    if (dir == DIR_NONE) {
-        return false;
-    }
-    
-    /* Check if the move is valid */
-    if (!is_valid_move(game, movement->x, movement->y, dir)) {
-        return false;
-    }
-    
-    /* Calculate target position */
-    int target_x, target_y;
-    get_target_position(movement->x, movement->y, dir, &target_x, &target_y);
-    
-    /* Update movement state */
-    movement->dir = dir;
-    movement->is_moving = true;
-    movement->target_x = target_x;
-    movement->target_y = target_y;
-    movement->move_frame = 0;
-    movement->just_started_moving = true;
-    
-    return true;
-}
-
-/* Handle movement completion and start next movement if needed
- *
- * CONTINUOUS MOVEMENT CHAIN
- * -----------------------
- * This function handles the completion of a movement and determines what
- * should happen next. It implements a priority system for the next direction:
- *
- * 1. Use buffered direction if valid (for responsive cornering)
- * 2. Continue in the same direction if that key is still held
- * 3. Check any other held direction keys
- * 4. Stop moving if no valid direction is found
- *
- * This approach creates fluid, continuous movement while still being
- * responsive to player input, allowing for skillful navigation.
- */
+/* Handle movement completion and start next movement if needed */
 static void complete_movement(GameState* game) {
-    MovementState* movement = &game->player_movement;
+    MovementState* movement = &game->player;
     InputState* input = &game->input;
     
     /* Update position to target */
-    movement->x = movement->target_x;
-    movement->y = movement->target_y;
+    movement->pos_x = movement->target_x;
+    movement->pos_y = movement->target_y;
     movement->move_frame = 0;
     
-    /* Check if we should continue moving */
+    /* Check if target has an item */
+    if (get_cell_bit(game, movement->pos_x, movement->pos_y) == CELL_ITEM) {
+        /* Collect the item */
+        set_cell_bit(game, movement->pos_x, movement->pos_y, CELL_EMPTY);
+    }
+    
+    /* Check if we should continue moving, using bit operations where possible */
     Direction next_dir = DIR_NONE;
     
-    /* First priority: use buffered direction if it's valid */
-    if (input->has_buffered_dir &&
-        is_valid_move(game, movement->x, movement->y, input->buffered_dir)) {
+    /* Priority 1: Use buffered direction if valid */
+    if (has_buffered_dir(input) &&
+        is_valid_move(game, movement->pos_x, movement->pos_y, input->buffered_dir)) {
         next_dir = input->buffered_dir;
-        input->has_buffered_dir = false;
+        set_has_buffered(input, false);
     }
-    /* Second priority: continue in same direction if key still held */
-    else if (input->direction_keys[movement->dir] &&
-             is_valid_move(game, movement->x, movement->y, movement->dir)) {
-        next_dir = movement->dir;
-    }
-    /* Third priority: check for any held direction key */
+    /* Priority 2: Continue in same direction if key still held */
     else {
-        for (int i = 0; i < DIR_COUNT; i++) {
-            if (input->direction_keys[i] && is_valid_move(game, movement->x, movement->y, i)) {
-                next_dir = i;
-                break;
+        Direction current_dir = get_direction(movement);
+        if (is_key_pressed(input, current_dir) &&
+            is_valid_move(game, movement->pos_x, movement->pos_y, current_dir)) {
+            next_dir = current_dir;
+        }
+        /* Priority 3: Check for any held direction key */
+        else {
+            /* Use standard bit check instead of bit scan for compatibility */
+            uint8_t keys = input->key_states & 0x0F; /* Get just direction bits */
+            for (int i = 0; i < DIR_COUNT; i++) {
+                if ((keys & (1 << i)) && is_valid_move(game, movement->pos_x, movement->pos_y, i)) {
+                    next_dir = i;
+                    break;
+                }
             }
         }
     }
@@ -502,8 +413,8 @@ static void complete_movement(GameState* game) {
     if (next_dir != DIR_NONE) {
         start_movement(game, next_dir);
     } else {
-        movement->is_moving = false;
-        movement->dir = DIR_NONE;
+        set_moving(movement, false);
+        set_direction(movement, DIR_NONE);
     }
 }
 
@@ -511,192 +422,179 @@ static void complete_movement(GameState* game) {
  * Game Logic Functions
  */
 
-/* Initialize the game state
- *
- * GAME STATE INITIALIZATION
- * -----------------------
- * This function sets up the initial game state, including:
- * - Clearing the grid and placing walls/items
- * - Setting up the player's starting position
- * - Initializing timing and input state
- *
- * The initialization creates a clean, well-defined starting state,
- * essential for deterministic gameplay where the same inputs will
- * always produce the same results.
- */
+/* Initialize the game state with bit operations */
 static void init_game(GameState* game) {
-    /* Clear the grid */
-    for (int i = 0; i < GRID_SIZE; i++) {
-        game->grid[i] = CELL_EMPTY;
+    /* Zero out the grid with 64-bit operations for speed */
+    uint64_t* grid_64 = (uint64_t*)game->grid;
+    for (size_t i = 0; i < GRID_BYTES / 8; i++) {
+        grid_64[i] = 0ULL;
     }
     
-    /* Add some walls for collision testing */
-    for (int x = 5; x < 10; x++) {
-        set_cell(game, x, 5, CELL_WALL);
-        set_cell(game, x + 10, 8, CELL_WALL);
+    /* Add walls for a simple maze using bit operations */
+    
+    /* Outer walls */
+    for (int i = 0; i < GRID_WIDTH; i++) {
+        set_cell_bit(game, i, 0, CELL_WALL);              /* Top wall */
+        set_cell_bit(game, i, GRID_HEIGHT - 1, CELL_WALL); /* Bottom wall */
+    }
+    
+    for (int i = 0; i < GRID_HEIGHT; i++) {
+        set_cell_bit(game, 0, i, CELL_WALL);              /* Left wall */
+        set_cell_bit(game, GRID_WIDTH - 1, i, CELL_WALL); /* Right wall */
+    }
+    
+    /* Inner walls for testing */
+    for (int x = 10; x < 20; x++) {
+        set_cell_bit(game, x, 10, CELL_WALL);
+        set_cell_bit(game, x + 20, 15, CELL_WALL);
     }
     
     /* Add corner testing area */
-    for (int y = 10; y < 13; y++) {
-        set_cell(game, 5, y, CELL_WALL);
-        set_cell(game, 9, y, CELL_WALL);
+    for (int y = 20; y < 25; y++) {
+        set_cell_bit(game, 10, y, CELL_WALL);
+        set_cell_bit(game, 20, y, CELL_WALL);
     }
-    set_cell(game, 6, 10, CELL_WALL);
-    set_cell(game, 7, 10, CELL_WALL);
-    set_cell(game, 8, 10, CELL_WALL);
+    for (int x = 11; x < 20; x++) {
+        set_cell_bit(game, x, 20, CELL_WALL);
+    }
     
-    /* Add some items */
-    for (int i = 0; i < 20; i++) {
-        int x = rand() % GRID_WIDTH;
-        int y = rand() % GRID_HEIGHT;
-        if (get_cell(game, x, y) == CELL_EMPTY) {
-            set_cell(game, x, y, CELL_ITEM);
+    /* Add some items for collection */
+    for (int i = 0; i < 40; i++) {
+        int x = rand() & GRID_WIDTH_MASK;  /* Random x (0-63) */
+        int y = rand() & GRID_HEIGHT_MASK; /* Random y (0-31) */
+        if (get_cell_bit(game, x, y) == CELL_EMPTY) {
+            set_cell_bit(game, x, y, CELL_ITEM);
         }
     }
     
-    /* Place the player in the center */
-    game->player_movement.x = GRID_WIDTH / 2;
-    game->player_movement.y = GRID_HEIGHT / 2;
-    game->player_movement.dir = DIR_NONE;
-    game->player_movement.is_moving = false;
-    game->player_movement.target_x = game->player_movement.x;
-    game->player_movement.target_y = game->player_movement.y;
-    game->player_movement.move_frame = 0;
-    game->player_movement.just_started_moving = false;
+    /* Initialize player in center of grid */
+    game->player.pos_x = GRID_WIDTH >> 1;   /* Center X (32) */
+    game->player.pos_y = GRID_HEIGHT >> 1;  /* Center Y (16) */
+    game->player.target_x = game->player.pos_x;
+    game->player.target_y = game->player.pos_y;
+    game->player.state_flags = 0;  /* Not moving, no direction */
+    game->player.move_frame = 0;
     
-    /* Reset input state */
-    for (int i = 0; i < DIR_COUNT; i++) {
-        game->input.direction_keys[i] = false;
-    }
+    /* Reset input state using direct assignment instead of bitwise ops for initialization */
+    game->input.key_states = 0;
     game->input.current_dir = DIR_NONE;
     game->input.buffered_dir = DIR_NONE;
-    game->input.has_buffered_dir = false;
-    game->input.restart_requested = false;
     
-    /* Initialize timing */
+    /* Reset timing */
     game->last_tick_time = SDL_GetTicks();
     game->accumulated_time = 0;
     game->frame_count = 0;
 }
 
-/* Process key press/release and update input state
- *
- * INPUT PROCESSING METHODOLOGY
- * --------------------------
- * This function processes raw keyboard input and transforms it into
- * meaningful game input state. It follows these principles:
- *
- * 1. Keep track of which direction keys are currently held down
- * 2. Update the current active direction based on the most recent key press
- * 3. Handle key releases by finding the next most recently pressed key
- *
- * This approach creates responsive controls while handling scenarios
- * where the player holds multiple keys simultaneously.
- */
-static void process_key_press(InputState* input, SDL_Scancode key, bool pressed) {
+/* Process key press/release using bit operations */
+static void process_key_event(InputState* input, SDL_Scancode key, bool pressed) {
     Direction dir = DIR_NONE;
     
-    switch (key) {
-        case SDL_SCANCODE_RIGHT:
-            dir = DIR_RIGHT;
-            break;
-        case SDL_SCANCODE_UP:
-            dir = DIR_UP;
-            break;
-        case SDL_SCANCODE_LEFT:
-            dir = DIR_LEFT;
-            break;
-        case SDL_SCANCODE_DOWN:
-            dir = DIR_DOWN;
-            break;
-        case SDL_SCANCODE_R:
-            if (pressed) {
-                input->restart_requested = true;
-            }
-            return;
-        default:
-            return;  /* Not a direction key */
+    /* Map keyboard to direction - classic switch-case avoidance technique */
+    dir = (key == SDL_SCANCODE_RIGHT) ? DIR_RIGHT :
+    (key == SDL_SCANCODE_UP)    ? DIR_UP :
+    (key == SDL_SCANCODE_LEFT)  ? DIR_LEFT :
+    (key == SDL_SCANCODE_DOWN)  ? DIR_DOWN : DIR_NONE;
+    
+    /* Handle restart key */
+    if (key == SDL_SCANCODE_R) {
+        set_restart_requested(input, pressed);
+        return;
     }
     
-    /* Update direction key state */
-    input->direction_keys[dir] = pressed;
-    
-    /* If key was pressed (not released), update current direction */
-    if (pressed) {
-        input->current_dir = dir;
-    }
-    /* If key was released and it was the current direction, find a new current direction */
-    else if (dir == input->current_dir) {
-        input->current_dir = DIR_NONE;
-        for (int i = 0; i < DIR_COUNT; i++) {
-            if (input->direction_keys[i]) {
-                input->current_dir = i;
-                break;
+    /* Update direction key state if valid direction */
+    if (dir != DIR_NONE) {
+        set_key_state(input, dir, pressed);
+        
+        /* If key was pressed, update current direction */
+        if (pressed) {
+            input->current_dir = dir;
+        }
+        /* If key was released and it was the current direction, find new current direction */
+        else if (dir == input->current_dir) {
+            /* Use standard bit check instead of bit scan for compatibility */
+            uint8_t keys = input->key_states & 0x0F; /* Get just direction bits */
+            input->current_dir = DIR_NONE;
+            for (int i = 0; i < DIR_COUNT; i++) {
+                if (keys & (1 << i)) {
+                    input->current_dir = i;
+                    break;
+                }
             }
         }
     }
 }
 
-/* Process gamepad button press/release */
-static void process_gamepad_button(InputState* input, SDL_GamepadButton button, bool pressed) {
-    Direction dir = DIR_NONE;
+/* Efficient gamepad state polling with bit operations */
+static void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad) {
+    if (!gamepad) return;
     
-    switch (button) {
-        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
-            dir = DIR_RIGHT;
-            break;
-        case SDL_GAMEPAD_BUTTON_DPAD_UP:
-            dir = DIR_UP;
-            break;
-        case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
-            dir = DIR_LEFT;
-            break;
-        case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
-            dir = DIR_DOWN;
-            break;
-        case SDL_GAMEPAD_BUTTON_START:
-            if (pressed) {
-                input->restart_requested = true;
+    /* Create bit masks for different input sources */
+    uint8_t new_state = 0;
+    
+    /* Check D-pad states and set appropriate bits */
+    new_state |= SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT) ? KEY_RIGHT : 0;
+    new_state |= SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_UP)    ? KEY_UP    : 0;
+    new_state |= SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)  ? KEY_LEFT  : 0;
+    new_state |= SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)  ? KEY_DOWN  : 0;
+    
+    /* Check analog stick (with deadzone) */
+    float x_axis = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f;
+    float y_axis = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f;
+    
+    const float deadzone = 0.5f;
+    new_state |= (x_axis > deadzone)  ? KEY_RIGHT : 0;
+    new_state |= (x_axis < -deadzone) ? KEY_LEFT  : 0;
+    new_state |= (y_axis > deadzone)  ? KEY_DOWN  : 0;
+    new_state |= (y_axis < -deadzone) ? KEY_UP    : 0;
+    
+    /* Update input state for directions */
+    uint8_t old_state = input->key_states & 0x0F;
+    uint8_t changed_bits = old_state ^ new_state;
+    
+    /* Only process if anything changed */
+    if (changed_bits) {
+        /* Update the direction bits in key_states */
+        input->key_states = (input->key_states & ~0x0F) | new_state;
+        
+        /* If any new bits are set, update current direction */
+        uint8_t new_pressed = changed_bits & new_state;
+        if (new_pressed) {
+            /* Find first new direction bit */
+            for (int i = 0; i < DIR_COUNT; i++) {
+                if (new_pressed & (1 << i)) {
+                    input->current_dir = i;
+                    break;
+                }
             }
-            return;
-        default:
-            return;  /* Not a direction button */
+        }
+        /* If current direction was released, find new one */
+        else if (!(new_state & (1 << input->current_dir))) {
+            input->current_dir = DIR_NONE;
+            for (int i = 0; i < DIR_COUNT; i++) {
+                if (new_state & (1 << i)) {
+                    input->current_dir = i;
+                    break;
+                }
+            }
+        }
     }
     
-    /* Update direction state same as keyboard */
-    process_key_press(input, dir, pressed);
+    /* Check if restart button is pressed */
+    if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_START)) {
+        set_restart_requested(input, true);
+    }
 }
 
-/* Update game logic with fixed time step
- *
- * FIXED TIME STEP GAME LOOP
- * ------------------------
- * This function implements a deterministic, fixed time step update cycle
- * that ensures consistent gameplay regardless of hardware speed.
- *
- * Key features of this approach:
- * 1. Game logic runs at exactly LOGIC_TICK_RATE frames per second
- * 2. Each movement always takes FRAMES_PER_TILE frames to complete
- * 3. Game state is advanced in discrete, countable steps
- *
- * This technique has several advantages:
- * - Perfect reproducibility (same inputs always produce same results)
- * - No temporal aliasing or collision detection issues
- * - Simplified physics and animation with frame-based calculations
- * - Predictable CPU usage profile
- *
- * The implementation uses time accumulation to handle cases where the actual
- * frame rate doesn't perfectly match the desired logic tick rate, ensuring
- * the game runs at the same speed on all hardware.
- */
+/* Update game logic with fixed time step and bit operations */
 static void update_game_logic_fixed_step(GameState* game) {
-    MovementState* movement = &game->player_movement;
+    MovementState* movement = &game->player;
     InputState* input = &game->input;
     
     /* Check for restart request */
-    if (input->restart_requested) {
+    if (is_restart_requested(input)) {
         init_game(game);
-        input->restart_requested = false;
+        set_restart_requested(input, false);
         return;
     }
     
@@ -704,7 +602,7 @@ static void update_game_logic_fixed_step(GameState* game) {
     game->frame_count++;
     
     /* If not moving, check for direction input to start movement */
-    if (!movement->is_moving) {
+    if (!is_moving(movement)) {
         /* Try to move in current input direction */
         if (input->current_dir != DIR_NONE) {
             start_movement(game, input->current_dir);
@@ -715,13 +613,14 @@ static void update_game_logic_fixed_step(GameState* game) {
         /* Check for buffered direction change */
         if (movement->move_frame >= (FRAMES_PER_TILE - CORNER_BUFFER_FRAMES)) {
             /* Near the end of current movement, can buffer a turn */
+            Direction current_dir = get_direction(movement);
             if (input->current_dir != DIR_NONE &&
-                input->current_dir != movement->dir &&
-                !are_directions_opposite(input->current_dir, movement->dir)) {
+                input->current_dir != current_dir &&
+                !are_directions_opposite(input->current_dir, current_dir)) {
                 
                 /* Buffer this direction for the next intersection */
                 input->buffered_dir = input->current_dir;
-                input->has_buffered_dir = true;
+                set_has_buffered(input, true);
             }
         }
         
@@ -735,13 +634,13 @@ static void update_game_logic_fixed_step(GameState* game) {
     }
     
     /* Clear the just started moving flag after first frame */
-    if (movement->just_started_moving) {
-        movement->just_started_moving = false;
+    if (just_started_moving(movement)) {
+        set_just_started(movement, false);
     }
 }
 
 /*
- * Rendering Functions
+ * Rendering Functions with Bit Operations
  */
 
 /* Configure renderer for proper scaling */
@@ -751,21 +650,23 @@ static void configure_rendering(AppState* app) {
                                      SDL_LOGICAL_PRESENTATION_LETTERBOX);
 }
 
-/* Render the current game state
- *
- * VISUAL RENDERING METHODOLOGY
- * --------------------------
- * This function renders the current game state to the screen. It follows
- * a straightforward approach:
- *
- * 1. Render the grid (walls and items)
- * 2. Calculate the player's exact visual position based on movement state
- * 3. Render the player at the calculated position
- *
- * The rendering is frame-perfect, meaning the visual presentation exactly
- * matches the logical game state, with no desynchronization or artifacts.
- * This creates a fluid, consistent experience for the player.
- */
+/* Bit Flags for app state */
+#define APP_FULLSCREEN    0x01
+#define APP_TIME_SCALE    0x06    /* Bits 1-2 for time scale */
+#define APP_TS_SHIFT      1       /* Shift amount for time scale */
+
+/* Get time scale factor */
+static float get_time_scale(const AppState* app) {
+    static const float time_scales[] = {1.0f, 0.5f, 0.25f, 2.0f};
+    return time_scales[(app->app_flags & APP_TIME_SCALE) >> APP_TS_SHIFT];
+}
+
+/* Set time scale */
+static void set_time_scale(AppState* app, uint8_t scale_index) {
+    app->app_flags = (app->app_flags & ~APP_TIME_SCALE) | ((scale_index & 0x3) << APP_TS_SHIFT);
+}
+
+/* Render the current game state with bit operations - FIXED FOR FULL GRID DISPLAY */
 static void render_game(AppState* app) {
     GameState* game = &app->game;
     SDL_Renderer* renderer = app->renderer;
@@ -775,38 +676,61 @@ static void render_game(AppState* app) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
     SDL_RenderClear(renderer);
     
-    /* Render the grid */
-    rect.w = rect.h = BLOCK_SIZE;
+    /* Render the grid - Full grid, no camera */
+    rect.w = rect.h = PIXEL_SCALE;
     
+    /* Render all cells in the grid */
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            CellType cell = get_cell(game, x, y);
+            /* Calculate screen position */
+            rect.x = (float)(x * PIXEL_SCALE);
+            rect.y = (float)(y * PIXEL_SCALE);
             
-            if (cell == CELL_WALL) {
-                /* Draw walls */
-                rect.x = (float)(x * BLOCK_SIZE);
-                rect.y = (float)(y * BLOCK_SIZE);
-                SDL_SetRenderDrawColor(renderer, 64, 64, 192, SDL_ALPHA_OPAQUE);
-                SDL_RenderFillRect(renderer, &rect);
-            } else if (cell == CELL_ITEM) {
-                /* Draw items */
-                rect.x = (float)(x * BLOCK_SIZE + BLOCK_SIZE/4);
-                rect.y = (float)(y * BLOCK_SIZE + BLOCK_SIZE/4);
-                rect.w = rect.h = BLOCK_SIZE/2;
-                SDL_SetRenderDrawColor(renderer, 255, 255, 0, SDL_ALPHA_OPAQUE);
-                SDL_RenderFillRect(renderer, &rect);
-                rect.w = rect.h = BLOCK_SIZE; /* Reset for next iteration */
+            /* Get cell type with bit operations */
+            CellType cell = get_cell_bit(game, x, y);
+            
+            /* Render based on cell type */
+            switch (cell) {
+                case CELL_WALL:
+                    SDL_SetRenderDrawColor(renderer, 64, 64, 192, SDL_ALPHA_OPAQUE);
+                    SDL_RenderFillRect(renderer, &rect);
+                    break;
+                case CELL_ITEM:
+                    /* Draw items as smaller squares */
+                    rect.x += PIXEL_SCALE * 0.25f;
+                    rect.y += PIXEL_SCALE * 0.25f;
+                    rect.w = rect.h = PIXEL_SCALE * 0.5f;
+                    SDL_SetRenderDrawColor(renderer, 255, 255, 0, SDL_ALPHA_OPAQUE);
+                    SDL_RenderFillRect(renderer, &rect);
+                    rect.x -= PIXEL_SCALE * 0.25f;
+                    rect.y -= PIXEL_SCALE * 0.25f;
+                    rect.w = rect.h = PIXEL_SCALE;
+                    break;
+                default:
+                    break;
             }
         }
     }
     
+    /* Draw grid lines for visual reference */
+    SDL_SetRenderDrawColor(renderer, 32, 32, 32, SDL_ALPHA_OPAQUE);
+    for (int i = 0; i <= GRID_WIDTH; i++) {
+        /* Vertical lines */
+        SDL_RenderLine(renderer, i * PIXEL_SCALE, 0, i * PIXEL_SCALE, WINDOW_HEIGHT);
+    }
+    for (int i = 0; i <= GRID_HEIGHT; i++) {
+        /* Horizontal lines */
+        SDL_RenderLine(renderer, 0, i * PIXEL_SCALE, WINDOW_WIDTH, i * PIXEL_SCALE);
+    }
+    
     /* Calculate player's visual position */
     float visual_x, visual_y;
-    get_visual_position(&game->player_movement, &visual_x, &visual_y);
+    get_visual_position(&game->player, &visual_x, &visual_y);
     
     /* Render the player */
-    rect.x = visual_x * BLOCK_SIZE;
-    rect.y = visual_y * BLOCK_SIZE;
+    rect.x = visual_x * PIXEL_SCALE;
+    rect.y = visual_y * PIXEL_SCALE;
+    rect.w = rect.h = PIXEL_SCALE;
     SDL_SetRenderDrawColor(renderer, 0, 255, 0, SDL_ALPHA_OPAQUE);
     SDL_RenderFillRect(renderer, &rect);
     
@@ -843,50 +767,32 @@ static void initialize_gamepad(AppState* app) {
 
 /* Toggle fullscreen mode */
 static void toggle_fullscreen(AppState* app) {
-    app->fullscreen = !app->fullscreen;
+    app->app_flags ^= APP_FULLSCREEN;  /* Toggle fullscreen bit */
+    bool fullscreen = (app->app_flags & APP_FULLSCREEN) != 0;
     
-    if (app->fullscreen) {
-        SDL_SetWindowFullscreen(app->window, true);
-    } else {
-        SDL_SetWindowFullscreen(app->window, false);
+    SDL_SetWindowFullscreen(app->window, fullscreen);
+    if (!fullscreen) {
         SDL_SetWindowSize(app->window, WINDOW_WIDTH, WINDOW_HEIGHT);
     }
     
     configure_rendering(app);
 }
 
-/* Toggle time scale for debugging */
-static void toggle_time_scale(AppState* app) {
-    if (app->time_scale == 1.0f) {
-        app->time_scale = 0.5f;
-        SDL_Log("Time scale: 0.5x (slow motion)");
-    } else if (app->time_scale == 0.5f) {
-        app->time_scale = 0.25f;
-        SDL_Log("Time scale: 0.25x (very slow)");
-    } else if (app->time_scale == 0.25f) {
-        app->time_scale = 2.0f;
-        SDL_Log("Time scale: 2.0x (fast)");
-    } else {
-        app->time_scale = 1.0f;
-        SDL_Log("Time scale: 1.0x (normal)");
-    }
+/* Cycle time scale for debugging */
+static void cycle_time_scale(AppState* app) {
+    uint8_t current = (app->app_flags & APP_TIME_SCALE) >> APP_TS_SHIFT;
+    uint8_t next = (current + 1) & 0x3;  /* Cycle through 0-3 */
+    set_time_scale(app, next);
+    
+    static const char* scale_names[] = {"normal (1x)", "slow (0.5x)", "very slow (0.25x)", "fast (2x)"};
+    SDL_Log("Time scale: %s", scale_names[next]);
 }
 
 /*
  * SDL App Callbacks
  */
 
-/* Initialize the application
- *
- * APPLICATION INITIALIZATION
- * ------------------------
- * This function initializes SDL and sets up the application state.
- * It creates the window and renderer, configures initial states,
- * and prepares the game for execution.
- *
- * The initialization process follows a clean, error-checking approach
- * to ensure the application starts in a well-defined state.
- */
+/* Initialize the application */
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     /* Initialize SDL */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) {
@@ -903,18 +809,17 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     }
     
     *appstate = app;
-    app->fullscreen = false;
-    app->time_scale = 1.0f;
+    app->app_flags = 0;  /* Not fullscreen, normal time scale */
     
     /* Create window and renderer */
     Uint32 window_flags = 0;
     
 #if defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_TV)
     window_flags = SDL_WINDOW_FULLSCREEN;
-    app->fullscreen = true;
+    app->app_flags |= APP_FULLSCREEN;
 #endif
     
-    if (!SDL_CreateWindowAndRenderer("SDL3 Grid Movement", WINDOW_WIDTH, WINDOW_HEIGHT,
+    if (!SDL_CreateWindowAndRenderer("Bit-Twiddled Game Engine", WINDOW_WIDTH, WINDOW_HEIGHT,
                                      window_flags, &app->window, &app->renderer)) {
         return SDL_APP_FAILURE;
     }
@@ -928,37 +833,29 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     /* Initialize game state */
     init_game(&app->game);
     
+    /* Seed random number generator */
+    srand((unsigned int)SDL_GetTicks());
+    
     return SDL_APP_CONTINUE;
 }
 
-/* Main game loop iteration
- *
- * FIXED TIME STEP WITH ACCUMULATOR
- * ------------------------------
- * This function implements a fixed time step game loop using an accumulator
- * pattern. It ensures that game logic runs at a consistent rate regardless
- * of the actual frame rate.
- *
- * The approach:
- * 1. Track elapsed time since last frame
- * 2. Add it to an accumulator
- * 3. Run logic updates in fixed LOGIC_TICK_MS steps
- * 4. Leave any remainder in the accumulator for the next frame
- *
- * This creates a deterministic update cycle while still allowing smooth
- * rendering at whatever frame rate the system can achieve.
- */
+/* Main game loop iteration with fixed time step */
 SDL_AppResult SDL_AppIterate(void* appstate) {
     AppState* app = (AppState*)appstate;
     GameState* game = &app->game;
     
     /* Calculate elapsed time */
-    Uint64 current_time = SDL_GetTicks();
+    Uint32 current_time = SDL_GetTicks();
     int delta_time = (int)(current_time - game->last_tick_time);
     game->last_tick_time = current_time;
     
-    /* Apply time scaling (for debugging) */
-    delta_time = (int)(delta_time * app->time_scale);
+    /* Apply time scaling */
+    delta_time = (int)(delta_time * get_time_scale(app));
+    
+    /* Check gamepad state every frame */
+    if (app->gamepad) {
+        process_gamepad_state(&game->input, app->gamepad);
+    }
     
     /* Add to accumulator */
     game->accumulated_time += delta_time;
@@ -975,21 +872,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     return SDL_APP_CONTINUE;
 }
 
-/* Process SDL events
- *
- * EVENT PROCESSING METHODOLOGY
- * --------------------------
- * This function processes SDL events and translates them into application
- * actions. It handles:
- * - Keyboard input
- * - Gamepad input
- * - Window events
- * - Application control (quit, fullscreen toggle, etc.)
- *
- * The event processing is kept separate from game logic, following the
- * principle of separation of concerns. Events update input state, which
- * the game logic then acts upon.
- */
+/* Process SDL events with bit operations where possible */
 SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
     AppState* app = (AppState*)appstate;
     GameState* game = &app->game;
@@ -1005,29 +888,22 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             } else if (event->key.scancode == SDL_SCANCODE_F) {
                 toggle_fullscreen(app);
             } else if (event->key.scancode == SDL_SCANCODE_T) {
-                toggle_time_scale(app);
+                cycle_time_scale(app);
             } else {
-                process_key_press(&game->input, event->key.scancode, true);
+                process_key_event(&game->input, event->key.scancode, true);
             }
             break;
             
         case SDL_EVENT_KEY_UP:
             /* Handle key release */
-            process_key_press(&game->input, event->key.scancode, false);
+            process_key_event(&game->input, event->key.scancode, false);
             break;
             
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-            /* Handle gamepad input */
+            /* For individual button press events, maintain compatibility */
             if (event->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) {
                 return SDL_APP_SUCCESS;
-            } else {
-                process_gamepad_button(&game->input, event->gbutton.button, true);
             }
-            break;
-            
-        case SDL_EVENT_GAMEPAD_BUTTON_UP:
-            /* Handle gamepad button release */
-            process_gamepad_button(&game->input, event->gbutton.button, false);
             break;
             
         case SDL_EVENT_WINDOW_RESIZED:
