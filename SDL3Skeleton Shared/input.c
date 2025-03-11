@@ -209,9 +209,19 @@ void process_touch_motion(InputState* input, float x, float y, uint32_t finger_i
     float dx = x - input->touch_start_x;
     float dy = y - input->touch_start_y;
     
+    /* Constrain to maximum distance for D-pad (tighter control) */
+    const float max_distance = 60.0f;  /* Maximum distance for full activation */
+    float distance = sqrtf(dx*dx + dy*dy);
+    
+    if (distance > max_distance) {
+        /* Normalize to max distance to create a "hard edge" feeling */
+        dx = dx * max_distance / distance;
+        dy = dy * max_distance / distance;
+    }
+    
     /* Convert to direction based on greatest displacement (digital control) */
     /* Using a small deadzone to prevent accidental movements */
-    const float deadzone = 10.0f;
+    const float deadzone = 8.0f;  /* Smaller deadzone for more responsive control */
     
     /* Clear existing direction keys from touch */
     input->key_states &= ~0x0F;  /* Clear direction bits */
@@ -262,7 +272,7 @@ void process_touch_up(InputState* input, uint32_t finger_id) {
     input->current_dir = DIR_NONE;
 }
 
-/* Get the current touch direction */
+/* Get the current touch direction with tighter control and stronger diagonal resistance */
 Direction get_touch_direction(const InputState* input) {
     if (!is_touch_active(input)) {
         return DIR_NONE;
@@ -272,19 +282,25 @@ Direction get_touch_direction(const InputState* input) {
     float dx = input->touch_current_x - input->touch_start_x;
     float dy = input->touch_current_y - input->touch_start_y;
     
-    /* Convert to direction based on greatest displacement */
-    const float deadzone = 10.0f;
+    /* Apply deadzone */
+    const float deadzone = 8.0f;
     
-    if (fabsf(dx) > deadzone || fabsf(dy) > deadzone) {
-        /* Determine if horizontal or vertical movement dominates */
-        if (fabsf(dx) > fabsf(dy)) {
-            /* Horizontal movement */
-            return (dx > 0) ? DIR_RIGHT : DIR_LEFT;
-        } else {
-            /* Vertical movement */
-            return (dy > 0) ? DIR_DOWN : DIR_UP;
-        }
+    if (fabsf(dx) <= deadzone && fabsf(dy) <= deadzone) {
+        return DIR_NONE;
     }
     
-    return DIR_NONE;
+    /* Enhanced diagonal resistance - require a stronger bias to register direction */
+    /* This makes it easier to get clean cardinal directions */
+    if (fabsf(dx) > fabsf(dy) * 1.2f) {
+        /* Horizontal movement with bias multiplier */
+        return (dx > 0) ? DIR_RIGHT : DIR_LEFT;
+    } else if (fabsf(dy) > fabsf(dx) * 1.2f) {
+        /* Vertical movement with bias multiplier */
+        return (dy > 0) ? DIR_DOWN : DIR_UP;
+    } else {
+        /* In the diagonal deadzone, use the slightly stronger direction */
+        return (fabsf(dx) > fabsf(dy)) ?
+        ((dx > 0) ? DIR_RIGHT : DIR_LEFT) :
+        ((dy > 0) ? DIR_DOWN : DIR_UP);
+    }
 }

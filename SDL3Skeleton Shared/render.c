@@ -136,63 +136,166 @@ void update_fps(AppState* app) {
 
 /* Render touch controls visualization */
 void render_touch_controls(AppState* app) {
-    InputState* input = &app->game.input;
+    GameState* game = &app->game;
+    InputState* input = &game->input;
+    SDL_Renderer* renderer = app->renderer;
     
     /* Only render if touch is active */
     if (!is_touch_active(input)) {
         return;
     }
     
-    SDL_Renderer* renderer = app->renderer;
+    Direction touch_dir = get_touch_direction(input);
     
-    /* Set color for touch UI elements */
-    SDL_SetRenderDrawColor(renderer,
-                           TOUCH_UI_COLOR.r,
-                           TOUCH_UI_COLOR.g,
-                           TOUCH_UI_COLOR.b,
-                           TOUCH_UI_COLOR.a);
+    /* Calculate opacity based on time since last touch movement */
+    static Uint64 last_touch_time = 0;
+    static Uint8 opacity = 220;  /* Initial opacity (0-255) */
     
-    /* Draw joystick center (starting position) */
+    /* Update opacity */
+    Uint64 current_time = SDL_GetTicks();
+    
+    /* If touch direction changed, reset opacity timer */
+    static Direction last_dir = DIR_NONE;
+    if (touch_dir != last_dir) {
+        last_touch_time = current_time;
+        opacity = 220;  /* Full opacity on direction change */
+        last_dir = touch_dir;
+    }
+    
+    /* Fade out gradually when not moving (after 500ms) */
+    if (current_time - last_touch_time > 500) {
+        /* Decrease opacity by 1 every frame until reaching 120 */
+        opacity = (opacity > 120) ? opacity - 1 : 120;
+    }
+    
+    /* D-pad dimensions */
+    const float dpad_size = 120.0f;  /* Overall size of D-pad */
+    const float button_size = dpad_size / 3.0f;  /* Size of each direction button */
+    const float center_size = button_size;  /* Size of center piece */
+    
+    /* Calculate D-pad center position */
+    float center_x = input->touch_start_x;
+    float center_y = input->touch_start_y;
+    
+    /* Constrain to screen boundaries with padding */
+    const float padding = dpad_size / 2.0f + 10.0f;
+    if (center_x < padding) center_x = padding;
+    if (center_x > WINDOW_WIDTH - padding) center_x = WINDOW_WIDTH - padding;
+    if (center_y < padding) center_y = padding;
+    if (center_y > WINDOW_HEIGHT - padding) center_y = WINDOW_HEIGHT - padding;
+    
+    /* Set semi-transparent color for D-pad */
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, opacity);
+    
+    /* Draw D-pad center */
     SDL_FRect center_rect = {
-        input->touch_start_x - 15.0f,
-        input->touch_start_y - 15.0f,
-        30.0f, 30.0f
+        center_x - center_size/2.0f,
+        center_y - center_size/2.0f,
+        center_size,
+        center_size
     };
     SDL_RenderFillRect(renderer, &center_rect);
     
-    /* Draw current touch position */
-    SDL_FRect touch_rect = {
-        input->touch_current_x - 20.0f,
-        input->touch_current_y - 20.0f,
-        40.0f, 40.0f
+    /* Draw the four direction buttons */
+    SDL_FRect button_rects[4];  /* RIGHT, UP, LEFT, DOWN */
+    
+    /* Right button */
+    button_rects[0] = (SDL_FRect){
+        center_x + center_size/2.0f,
+        center_y - button_size/2.0f,
+        button_size,
+        button_size
     };
-    SDL_RenderRect(renderer, &touch_rect);
     
-    /* Draw line connecting them */
-    SDL_RenderLine(renderer,
-                   input->touch_start_x, input->touch_start_y,
-                   input->touch_current_x, input->touch_current_y);
+    /* Up button */
+    button_rects[1] = (SDL_FRect){
+        center_x - button_size/2.0f,
+        center_y - center_size/2.0f - button_size,
+        button_size,
+        button_size
+    };
     
-    /* Draw direction indicator */
-    Direction touch_dir = get_touch_direction(input);
+    /* Left button */
+    button_rects[2] = (SDL_FRect){
+        center_x - center_size/2.0f - button_size,
+        center_y - button_size/2.0f,
+        button_size,
+        button_size
+    };
     
-    if (touch_dir != DIR_NONE) {
-        /* Calculate position for direction label */
-        float mid_x = (input->touch_start_x + input->touch_current_x) / 2;
-        float mid_y = (input->touch_start_y + input->touch_current_y) / 2 - 30;
+    /* Down button */
+    button_rects[3] = (SDL_FRect){
+        center_x - button_size/2.0f,
+        center_y + center_size/2.0f,
+        button_size,
+        button_size
+    };
+    
+    /* Draw D-pad buttons with outlines */
+    for (int i = 0; i < 4; i++) {
+        /* Draw button outline */
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, opacity);
+        SDL_RenderRect(renderer, &button_rects[i]);
         
-        /* We would draw text here if we had text rendering capabilities */
-        /* For now, just draw a circle at midpoint to indicate active direction */
-        SDL_SetRenderDrawColor(renderer, 255, 255, 0, 192);
-        
-        const float radius = 10.0f;
-        for (float angle = 0; angle < 6.28f; angle += 0.2f) {
-            float x1 = mid_x + sinf(angle) * radius;
-            float y1 = mid_y + cosf(angle) * radius;
-            float x2 = mid_x + sinf(angle + 0.2f) * radius;
-            float y2 = mid_y + cosf(angle + 0.2f) * radius;
-            SDL_RenderLine(renderer, x1, y1, x2, y2);
+        /* If this direction is active, fill it */
+        if (touch_dir == i) {
+            /* Highlight active direction with a fill */
+            SDL_SetRenderDrawColor(renderer, 150, 220, 255, opacity);
+            SDL_RenderFillRect(renderer, &button_rects[i]);
+            
+            /* Add an arrow or symbol to indicate direction */
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, opacity);
+            
+            /* Simple directional indicators */
+            float bx = button_rects[i].x;
+            float by = button_rects[i].y;
+            float bw = button_rects[i].w;
+            float bh = button_rects[i].h;
+            
+            switch (i) {
+                case DIR_RIGHT: /* Right triangle */
+                    SDL_RenderLine(renderer, bx + bw*0.3f, by + bh*0.3f, bx + bw*0.7f, by + bh*0.5f);
+                    SDL_RenderLine(renderer, bx + bw*0.7f, by + bh*0.5f, bx + bw*0.3f, by + bh*0.7f);
+                    break;
+                case DIR_UP: /* Up triangle */
+                    SDL_RenderLine(renderer, bx + bw*0.3f, by + bh*0.7f, bx + bw*0.5f, by + bh*0.3f);
+                    SDL_RenderLine(renderer, bx + bw*0.5f, by + bh*0.3f, bx + bw*0.7f, by + bh*0.7f);
+                    break;
+                case DIR_LEFT: /* Left triangle */
+                    SDL_RenderLine(renderer, bx + bw*0.7f, by + bh*0.3f, bx + bw*0.3f, by + bh*0.5f);
+                    SDL_RenderLine(renderer, bx + bw*0.3f, by + bh*0.5f, bx + bw*0.7f, by + bh*0.7f);
+                    break;
+                case DIR_DOWN: /* Down triangle */
+                    SDL_RenderLine(renderer, bx + bw*0.3f, by + bh*0.3f, bx + bw*0.5f, by + bh*0.7f);
+                    SDL_RenderLine(renderer, bx + bw*0.5f, by + bh*0.7f, bx + bw*0.7f, by + bh*0.3f);
+                    break;
+            }
         }
+    }
+    
+    /* Optional: Draw the current touch position for feedback */
+    if (opacity > 150) {  /* Only show when opacity is high */
+        float dx = input->touch_current_x - center_x;
+        float dy = input->touch_current_y - center_y;
+        
+        /* Constrain to maximum distance (tighter control) */
+        const float max_distance = dpad_size * 0.6f;
+        float distance = sqrtf(dx*dx + dy*dy);
+        
+        if (distance > max_distance) {
+            dx = dx * max_distance / distance;
+            dy = dy * max_distance / distance;
+        }
+        
+        /* Draw touch indicator at current position (constrained) */
+        SDL_FRect touch_indicator = {
+            center_x + dx - 10.0f,
+            center_y + dy - 10.0f,
+            20.0f, 20.0f
+        };
+        
+        SDL_SetRenderDrawColor(renderer, 255, 220, 100, opacity);
+        SDL_RenderFillRect(renderer, &touch_indicator);
     }
 }
 
