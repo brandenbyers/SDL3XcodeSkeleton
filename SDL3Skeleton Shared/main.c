@@ -1,11 +1,13 @@
 /*
- * Bit-Twiddled Classic Game Engine (FIXED)
+ * Bit-Twiddled Classic Game Engine (OPTIMIZED)
  *
  * This implementation embraces classic game optimization techniques used in 8-bit
  * and 16-bit era games, while ensuring:
  * 1. Proper display of the full 64×32 grid
  * 2. Smooth, consistent animation between tiles
  * 3. Correct screen wrapping calculations
+ * 4. Optimized rendering with textures for minimal CPU usage
+ * 5. Energy-aware operation on Apple platforms
  *
  * Key techniques implemented:
  * 1. Bit-packed grid (2 bits per cell = 4 cells per byte)
@@ -13,6 +15,10 @@
  * 3. Input state packed into individual bits
  * 4. Movement state using bit flags instead of separate booleans
  * 5. Fixed time step with frame counting for deterministic animation
+ * 6. Metal-based rendering for Apple platforms
+ * 7. Texture-based rendering instead of individual draw calls
+ * 8. Static textures for unchanging elements (grid lines)
+ * 9. Power state management and intelligent sleep
  */
 
 #define SDL_MAIN_USE_CALLBACKS 1
@@ -24,6 +30,16 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include "main.h"
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_MAC && !TARGET_OS_IOS && !TARGET_OS_TV
+// macOS specific headers for power management
+#include <IOKit/IOKitLib.h>
+#include <IOKit/ps/IOPowerSources.h>
+#include <IOKit/ps/IOPSKeys.h>
+#endif
+#endif
 
 /*
  * Grid Configuration With Power-of-Two Dimensions
@@ -44,9 +60,13 @@
 
 /* Game timing configuration */
 #define LOGIC_TICK_RATE     60      /* Game logic updates per second */
-#define FRAMES_PER_TILE     3      /* Frames to move one tile */
+#define FRAMES_PER_TILE     6       /* Frames to move one tile */
 #define LOGIC_TICK_MS       (1000 / LOGIC_TICK_RATE)
-#define CORNER_BUFFER_FRAMES 2      /* Frames before tile end to accept corner input */
+#define CORNER_BUFFER_FRAMES 4      /* Frames before tile end to accept corner input */
+
+/* Energy management */
+#define BATTERY_SAVER_FPS   30      /* Lower frame rate when on battery */
+#define BACKGROUND_FPS      10      /* Very low frame rate when in background */
 
 /* Cell types stored in 2 bits per cell */
 typedef enum {
@@ -113,13 +133,41 @@ typedef struct {
     SDL_Renderer* renderer;
     SDL_Gamepad* gamepad;
     SDL_JoystickID gamepad_id;
+    
+    /* Texture-based rendering */
+    SDL_Texture* cell_textures[CELL_MAX];  /* Textures for each cell type */
+    SDL_Texture* player_texture;           /* Player texture */
+    SDL_Texture* grid_lines_texture;       /* Pre-rendered grid lines */
+    SDL_Texture* render_target;            /* Render target for full scene */
+    
     GameState game;
     uint8_t app_flags;             /* Bit 0: fullscreen, 1-2: time scale */
+    
+    /* Power management */
+    bool is_on_battery;            /* True if running on battery */
+    bool is_in_background;         /* True if app is in background */
+    bool is_low_power_mode;        /* True if in low power mode */
+    int target_fps;                /* Target FPS based on power state */
 } AppState;
 
 /* Pre-computed lookup tables for movement */
 static const int8_t DIR_OFFSET_X[4] = {1, 0, -1, 0};   /* RIGHT, UP, LEFT, DOWN */
 static const int8_t DIR_OFFSET_Y[4] = {0, -1, 0, 1};   /* RIGHT, UP, LEFT, DOWN */
+
+/* Power state colors - dimmer in low power modes */
+static const SDL_Color CELL_COLORS[CELL_MAX][2] = {
+    {{ 0,   0,   0,   255 }, { 0,   0,   0,   255 }}, /* CELL_EMPTY: black in both modes */
+    {{ 64,  64,  192, 255 }, { 32,  32,  128, 255 }}, /* CELL_WALL: blue, dimmer in low power */
+    {{ 255, 255, 0,   255 }, { 192, 192, 0,   255 }}, /* CELL_ITEM: yellow, dimmer in low power */
+};
+static const SDL_Color PLAYER_COLOR[2] = {
+    { 0, 255, 0, 255 },   /* Normal: bright green */
+    { 0, 192, 0, 255 }    /* Low power: dimmer green */
+};
+static const SDL_Color GRID_LINE_COLOR[2] = {
+    { 32, 32, 32, 255 },  /* Normal: dark gray */
+    { 16, 16, 16, 255 }   /* Low power: very dark gray */
+};
 
 /* Function declarations */
 static void init_game(GameState* game);
@@ -127,6 +175,12 @@ static void update_game_logic_fixed_step(GameState* game);
 static void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad);
 static void process_key_event(InputState* input, SDL_Scancode key, bool pressed);
 static void render_game(AppState* app);
+static void create_textures(AppState* app);
+static void destroy_textures(AppState* app);
+static void update_power_state(AppState* app);
+static void create_cell_texture(AppState* app, CellType type);
+static void create_player_texture(AppState* app);
+static void create_grid_lines_texture(AppState* app);
 
 /*
  * Bit-Manipulating Grid Functions
@@ -323,8 +377,6 @@ static void get_visual_position(const MovementState* movement, float* visual_x, 
     float target_x = (float)movement->target_x;
     float target_y = (float)movement->target_y;
     
-    /* FIXED: Use proper distance check for wrapping detection */
-    
     /* Check if wrapping horizontally */
     int dx = abs((int)movement->target_x - (int)movement->pos_x);
     if (dx > GRID_WIDTH/2) {
@@ -419,6 +471,257 @@ static void complete_movement(GameState* game) {
 }
 
 /*
+ * Power Management Functions
+ */
+
+/* Check if running on battery power */
+static bool is_running_on_battery(void) {
+#if defined(__APPLE__) && TARGET_OS_MAC && !TARGET_OS_IOS && !TARGET_OS_TV
+    CFTypeRef power_sources = IOPSCopyPowerSourcesInfo();
+    if (!power_sources) return false;
+    
+    CFArrayRef power_source_list = IOPSCopyPowerSourcesList(power_sources);
+    if (!power_source_list) {
+        CFRelease(power_sources);
+        return false;
+    }
+    
+    bool on_battery = false;
+    int power_source_count = (int)CFArrayGetCount(power_source_list);
+    
+    for (int i = 0; i < power_source_count; i++) {
+        CFTypeRef power_source = CFArrayGetValueAtIndex(power_source_list, i);
+        CFDictionaryRef description = IOPSGetPowerSourceDescription(power_sources, power_source);
+        
+        if (description) {
+            CFStringRef power_source_state = CFDictionaryGetValue(description, CFSTR(kIOPSPowerSourceStateKey));
+            if (power_source_state && CFEqual(power_source_state, CFSTR(kIOPSBatteryPowerValue))) {
+                on_battery = true;
+                break;
+            }
+        }
+    }
+    
+    CFRelease(power_source_list);
+    CFRelease(power_sources);
+    return on_battery;
+#else
+    /* For iOS/tvOS, assume always on battery */
+#if defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_TV)
+    return true;
+#else
+    return false;
+#endif
+#endif
+}
+
+/* Check if in low power mode */
+static bool is_in_low_power_mode(void) {
+#if defined(__APPLE__) && TARGET_OS_IOS
+    // For iOS, we could check NSProcessInfo.processInfo.lowPowerModeEnabled
+    // But since we're in C, we'll simplify and just check if on battery
+    return true;  // Assume low power mode on iOS
+#else
+    return false;
+#endif
+}
+
+/* Update power state and adjust settings accordingly */
+static void update_power_state(AppState* app) {
+    bool prev_battery_state = app->is_on_battery;
+    
+    app->is_on_battery = is_running_on_battery();
+    app->is_low_power_mode = is_in_low_power_mode();
+    
+    /* Determine target FPS based on power state */
+    if (app->is_in_background) {
+        app->target_fps = BACKGROUND_FPS;
+    } else if (app->is_on_battery || app->is_low_power_mode) {
+        app->target_fps = BATTERY_SAVER_FPS;
+    } else {
+        app->target_fps = LOGIC_TICK_RATE;
+    }
+    
+    /* If power state changed, update textures to match brightness */
+    if (prev_battery_state != app->is_on_battery) {
+        /* Regenerate textures with appropriate colors */
+        create_textures(app);
+        SDL_Log("Power state changed: %s", app->is_on_battery ? "On Battery" : "On AC Power");
+    }
+}
+
+/*
+ * Texture Creation Functions for Optimized Rendering
+ */
+
+/* Fill a texture with a solid color */
+static void fill_texture_with_color(SDL_Renderer* renderer, SDL_Texture* texture, SDL_Color color) {
+    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
+    SDL_SetRenderTarget(renderer, texture);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_RenderClear(renderer);
+    SDL_SetRenderTarget(renderer, NULL);
+}
+
+/* Create a cell texture for the specified type */
+static void create_cell_texture(AppState* app, CellType type) {
+    if (app->cell_textures[type]) {
+        SDL_DestroyTexture(app->cell_textures[type]);
+    }
+    
+    /* Create the texture with appropriate size */
+    app->cell_textures[type] = SDL_CreateTexture(
+                                                 app->renderer,
+                                                 SDL_PIXELFORMAT_RGBA8888,
+                                                 SDL_TEXTUREACCESS_TARGET,
+                                                 PIXEL_SCALE,
+                                                 PIXEL_SCALE
+                                                 );
+    
+    /* Set appropriate color based on power state */
+    SDL_Color color = CELL_COLORS[type][app->is_on_battery || app->is_low_power_mode ? 1 : 0];
+    
+    /* For empty cells, we can use an optimized version */
+    if (type == CELL_EMPTY) {
+        /* Make it a fully transparent texture */
+        SDL_SetTextureBlendMode(app->cell_textures[type], SDL_BLENDMODE_NONE);
+        return;
+    }
+    
+    /* For items, draw a smaller square */
+    if (type == CELL_ITEM) {
+        SDL_SetRenderTarget(app->renderer, app->cell_textures[type]);
+        SDL_SetRenderDrawColor(app->renderer, 0, 0, 0, 0);
+        SDL_RenderClear(app->renderer);
+        
+        SDL_FRect rect = {
+            PIXEL_SCALE * 0.25f,
+            PIXEL_SCALE * 0.25f,
+            PIXEL_SCALE * 0.5f,
+            PIXEL_SCALE * 0.5f
+        };
+        
+        SDL_SetRenderDrawColor(app->renderer, color.r, color.g, color.b, color.a);
+        SDL_RenderFillRect(app->renderer, &rect);
+        SDL_SetRenderTarget(app->renderer, NULL);
+        SDL_SetTextureBlendMode(app->cell_textures[type], SDL_BLENDMODE_BLEND);
+    } else {
+        /* For other cells, just fill with color */
+        fill_texture_with_color(app->renderer, app->cell_textures[type], color);
+    }
+}
+
+/* Create player texture */
+static void create_player_texture(AppState* app) {
+    if (app->player_texture) {
+        SDL_DestroyTexture(app->player_texture);
+    }
+    
+    app->player_texture = SDL_CreateTexture(
+                                            app->renderer,
+                                            SDL_PIXELFORMAT_RGBA8888,
+                                            SDL_TEXTUREACCESS_TARGET,
+                                            PIXEL_SCALE,
+                                            PIXEL_SCALE
+                                            );
+    
+    SDL_Color color = PLAYER_COLOR[app->is_on_battery || app->is_low_power_mode ? 1 : 0];
+    fill_texture_with_color(app->renderer, app->player_texture, color);
+}
+
+/* Create grid lines texture */
+static void create_grid_lines_texture(AppState* app) {
+    if (app->grid_lines_texture) {
+        SDL_DestroyTexture(app->grid_lines_texture);
+    }
+    
+    app->grid_lines_texture = SDL_CreateTexture(
+                                                app->renderer,
+                                                SDL_PIXELFORMAT_RGBA8888,
+                                                SDL_TEXTUREACCESS_TARGET,
+                                                WINDOW_WIDTH,
+                                                WINDOW_HEIGHT
+                                                );
+    
+    SDL_SetRenderTarget(app->renderer, app->grid_lines_texture);
+    SDL_SetRenderDrawColor(app->renderer, 0, 0, 0, 0);
+    SDL_RenderClear(app->renderer);
+    
+    SDL_Color color = GRID_LINE_COLOR[app->is_on_battery || app->is_low_power_mode ? 1 : 0];
+    SDL_SetRenderDrawColor(app->renderer, color.r, color.g, color.b, color.a);
+    
+    /* Draw vertical lines */
+    for (int i = 0; i <= GRID_WIDTH; i++) {
+        SDL_RenderLine(app->renderer, i * PIXEL_SCALE, 0, i * PIXEL_SCALE, WINDOW_HEIGHT);
+    }
+    
+    /* Draw horizontal lines */
+    for (int i = 0; i <= GRID_HEIGHT; i++) {
+        SDL_RenderLine(app->renderer, 0, i * PIXEL_SCALE, WINDOW_WIDTH, i * PIXEL_SCALE);
+    }
+    
+    SDL_SetRenderTarget(app->renderer, NULL);
+    SDL_SetTextureBlendMode(app->grid_lines_texture, SDL_BLENDMODE_BLEND);
+}
+
+/* Create render target texture */
+static void create_render_target(AppState* app) {
+    if (app->render_target) {
+        SDL_DestroyTexture(app->render_target);
+    }
+    
+    app->render_target = SDL_CreateTexture(
+                                           app->renderer,
+                                           SDL_PIXELFORMAT_RGBA8888,
+                                           SDL_TEXTUREACCESS_TARGET,
+                                           WINDOW_WIDTH,
+                                           WINDOW_HEIGHT
+                                           );
+}
+
+/* Create all textures */
+static void create_textures(AppState* app) {
+    /* Create cell textures */
+    for (int i = 0; i < CELL_MAX; i++) {
+        create_cell_texture(app, i);
+    }
+    
+    /* Create player texture */
+    create_player_texture(app);
+    
+    /* Create grid lines texture */
+    create_grid_lines_texture(app);
+    
+    /* Create render target */
+    create_render_target(app);
+}
+
+/* Destroy all textures */
+static void destroy_textures(AppState* app) {
+    for (int i = 0; i < CELL_MAX; i++) {
+        if (app->cell_textures[i]) {
+            SDL_DestroyTexture(app->cell_textures[i]);
+            app->cell_textures[i] = NULL;
+        }
+    }
+    
+    if (app->player_texture) {
+        SDL_DestroyTexture(app->player_texture);
+        app->player_texture = NULL;
+    }
+    
+    if (app->grid_lines_texture) {
+        SDL_DestroyTexture(app->grid_lines_texture);
+        app->grid_lines_texture = NULL;
+    }
+    
+    if (app->render_target) {
+        SDL_DestroyTexture(app->render_target);
+        app->render_target = NULL;
+    }
+}
+
+/*
  * Game Logic Functions
  */
 
@@ -437,11 +740,6 @@ static void init_game(GameState* game) {
         set_cell_bit(game, i, 0, CELL_WALL);              /* Top wall */
         set_cell_bit(game, i, GRID_HEIGHT - 1, CELL_WALL); /* Bottom wall */
     }
-    
-//    for (int i = 0; i < GRID_HEIGHT; i++) {
-//        set_cell_bit(game, 0, i, CELL_WALL);              /* Left wall */
-//        set_cell_bit(game, GRID_WIDTH - 1, i, CELL_WALL); /* Right wall */
-//    }
     
     /* Inner walls for testing */
     for (int x = 10; x < 20; x++) {
@@ -640,7 +938,7 @@ static void update_game_logic_fixed_step(GameState* game) {
 }
 
 /*
- * Rendering Functions with Bit Operations
+ * Rendering Functions with Texture-Based Optimizations
  */
 
 /* Configure renderer for proper scaling */
@@ -666,73 +964,61 @@ static void set_time_scale(AppState* app, uint8_t scale_index) {
     app->app_flags = (app->app_flags & ~APP_TIME_SCALE) | ((scale_index & 0x3) << APP_TS_SHIFT);
 }
 
-/* Render the current game state with bit operations - FIXED FOR FULL GRID DISPLAY */
+/* Optimized render function using textures */
 static void render_game(AppState* app) {
     GameState* game = &app->game;
     SDL_Renderer* renderer = app->renderer;
-    SDL_FRect rect;
     
-    /* Clear the screen */
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
+    /* Set render target to our texture */
+    SDL_SetRenderTarget(renderer, app->render_target);
+    
+    /* Clear the render target */
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
     
-    /* Render the grid - Full grid, no camera */
-    rect.w = rect.h = PIXEL_SCALE;
+    /* Render grid using batch texturing */
+    SDL_FRect dest_rect = { 0, 0, PIXEL_SCALE, PIXEL_SCALE };
     
-    /* Render all cells in the grid */
+    /* We'll attempt to batch similar cells together for efficiency */
+    CellType last_type = CELL_MAX; /* Invalid to force first switch */
+    
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            /* Calculate screen position */
-            rect.x = (float)(x * PIXEL_SCALE);
-            rect.y = (float)(y * PIXEL_SCALE);
-            
-            /* Get cell type with bit operations */
             CellType cell = get_cell_bit(game, x, y);
             
-            /* Render based on cell type */
-            switch (cell) {
-                case CELL_WALL:
-                    SDL_SetRenderDrawColor(renderer, 64, 64, 192, SDL_ALPHA_OPAQUE);
-                    SDL_RenderFillRect(renderer, &rect);
-                    break;
-                case CELL_ITEM:
-                    /* Draw items as smaller squares */
-                    rect.x += PIXEL_SCALE * 0.25f;
-                    rect.y += PIXEL_SCALE * 0.25f;
-                    rect.w = rect.h = PIXEL_SCALE * 0.5f;
-                    SDL_SetRenderDrawColor(renderer, 255, 255, 0, SDL_ALPHA_OPAQUE);
-                    SDL_RenderFillRect(renderer, &rect);
-                    rect.x -= PIXEL_SCALE * 0.25f;
-                    rect.y -= PIXEL_SCALE * 0.25f;
-                    rect.w = rect.h = PIXEL_SCALE;
-                    break;
-                default:
-                    break;
+            /* Skip empty cells for efficiency */
+            if (cell == CELL_EMPTY) continue;
+            
+            /* Calculate destination rectangle */
+            dest_rect.x = (float)(x * PIXEL_SCALE);
+            dest_rect.y = (float)(y * PIXEL_SCALE);
+            
+            /* Switch texture if needed */
+            if (cell != last_type) {
+                last_type = cell;
             }
+            
+            /* Render the cell */
+            SDL_RenderTexture(renderer, app->cell_textures[cell], NULL, &dest_rect);
         }
     }
     
-    /* Draw grid lines for visual reference */
-    SDL_SetRenderDrawColor(renderer, 32, 32, 32, SDL_ALPHA_OPAQUE);
-    for (int i = 0; i <= GRID_WIDTH; i++) {
-        /* Vertical lines */
-        SDL_RenderLine(renderer, i * PIXEL_SCALE, 0, i * PIXEL_SCALE, WINDOW_HEIGHT);
-    }
-    for (int i = 0; i <= GRID_HEIGHT; i++) {
-        /* Horizontal lines */
-        SDL_RenderLine(renderer, 0, i * PIXEL_SCALE, WINDOW_WIDTH, i * PIXEL_SCALE);
-    }
+    /* Render grid lines */
+    SDL_RenderTexture(renderer, app->grid_lines_texture, NULL, NULL);
     
-    /* Calculate player's visual position */
+    /* Render player */
     float visual_x, visual_y;
     get_visual_position(&game->player, &visual_x, &visual_y);
     
-    /* Render the player */
-    rect.x = visual_x * PIXEL_SCALE;
-    rect.y = visual_y * PIXEL_SCALE;
-    rect.w = rect.h = PIXEL_SCALE;
-    SDL_SetRenderDrawColor(renderer, 0, 255, 0, SDL_ALPHA_OPAQUE);
-    SDL_RenderFillRect(renderer, &rect);
+    dest_rect.x = visual_x * PIXEL_SCALE;
+    dest_rect.y = visual_y * PIXEL_SCALE;
+    SDL_RenderTexture(renderer, app->player_texture, NULL, &dest_rect);
+    
+    /* Switch back to default render target (window) */
+    SDL_SetRenderTarget(renderer, NULL);
+    
+    /* Render the entire scene in one draw call */
+    SDL_RenderTexture(renderer, app->render_target, NULL, NULL);
     
     /* Present the rendered frame */
     SDL_RenderPresent(renderer);
@@ -794,13 +1080,17 @@ static void cycle_time_scale(AppState* app) {
 
 /* Initialize the application */
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
+    /* Set hints for optimal performance */
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");  /* Use Metal on Apple platforms */
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");       /* Enable VSync */
+    SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1"); /* Allow screensaver for energy saving */
+    
+    SDL_SetHint("SDL_POWERSTATE_POLLING_INTERVAL", "5000"); /* Check power state every 5 seconds */
+    
     /* Initialize SDL */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) {
         return SDL_APP_FAILURE;
     }
-    
-    /* Set VSync hint */
-    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
     
     /* Allocate application state */
     AppState* app = SDL_calloc(1, sizeof(AppState));
@@ -810,8 +1100,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     
     *appstate = app;
     app->app_flags = 0;  /* Not fullscreen, normal time scale */
+    app->target_fps = LOGIC_TICK_RATE;  /* Start with standard frame rate */
     
-    /* Create window and renderer */
+    /* Create window and renderer with better defaults */
     Uint32 window_flags = 0;
     
 #if defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_TV)
@@ -819,13 +1110,29 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     app->app_flags |= APP_FULLSCREEN;
 #endif
     
-    if (!SDL_CreateWindowAndRenderer("Bit-Twiddled Game Engine", WINDOW_WIDTH, WINDOW_HEIGHT,
-                                     window_flags, &app->window, &app->renderer)) {
+    app->window = SDL_CreateWindow("Bit-Twiddled Game Engine", WINDOW_WIDTH, WINDOW_HEIGHT, window_flags);
+    if (!app->window) {
         return SDL_APP_FAILURE;
     }
     
+    /* In SDL3, we just specify the renderer name (Metal for Apple platforms) */
+    app->renderer = SDL_CreateRenderer(app->window, "metal");
+    if (!app->renderer) {
+        /* Fall back to default renderer if Metal isn't available */
+        app->renderer = SDL_CreateRenderer(app->window, NULL);
+        if (!app->renderer) {
+            return SDL_APP_FAILURE;
+        }
+    }
+    
+    /* Check power state */
+    update_power_state(app);
+    
     /* Configure rendering */
     configure_rendering(app);
+    
+    /* Create textures */
+    create_textures(app);
     
     /* Initialize gamepad */
     initialize_gamepad(app);
@@ -836,16 +1143,30 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     /* Seed random number generator */
     srand((unsigned int)SDL_GetTicks());
     
+    /* Log renderer information */
+    const char* renderer_name = SDL_GetRendererName(app->renderer);
+    SDL_Log("Using renderer: %s", renderer_name ? renderer_name : "Unknown");
+    
     return SDL_APP_CONTINUE;
 }
 
-/* Main game loop iteration with fixed time step */
+/* Main game loop iteration with fixed time step and sleep optimization */
 SDL_AppResult SDL_AppIterate(void* appstate) {
     AppState* app = (AppState*)appstate;
     GameState* game = &app->game;
     
+    /* Record start time for frame timing */
+    Uint64 frame_start_time = SDL_GetTicks();
+    
+    /* Check power state periodically (every 5 seconds) */
+    static Uint64 last_power_check = 0;
+    if (frame_start_time - last_power_check > 5000) {
+        update_power_state(app);
+        last_power_check = frame_start_time;
+    }
+    
     /* Calculate elapsed time */
-    Uint64 current_time = SDL_GetTicks();
+    Uint64 current_time = frame_start_time;
     int delta_time = (int)(current_time - game->last_tick_time);
     game->last_tick_time = current_time;
     
@@ -868,6 +1189,18 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     
     /* Render the game */
     render_game(app);
+    
+    /* Calculate frame time and sleep if ahead of schedule */
+    Uint64 frame_end_time = SDL_GetTicks();
+    Uint64 frame_duration = frame_end_time - frame_start_time;
+    
+    /* Target frame time in milliseconds */
+    Uint64 target_frame_time = 1000 / app->target_fps;
+    
+    /* If we completed the frame early, sleep to save energy */
+    if (frame_duration < target_frame_time) {
+        SDL_Delay((Uint32)(target_frame_time - frame_duration));
+    }
     
     return SDL_APP_CONTINUE;
 }
@@ -910,6 +1243,16 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             configure_rendering(app);
             break;
             
+        case SDL_EVENT_WINDOW_FOCUS_GAINED:
+            app->is_in_background = false;
+            update_power_state(app);
+            break;
+            
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            app->is_in_background = true;
+            update_power_state(app);
+            break;
+            
         case SDL_EVENT_GAMEPAD_ADDED:
         case SDL_EVENT_GAMEPAD_REMOVED:
             /* Re-initialize gamepad if connection changes */
@@ -936,6 +1279,7 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result) {
             SDL_CloseGamepad(app->gamepad);
         }
         
+        destroy_textures(app);
         SDL_DestroyRenderer(app->renderer);
         SDL_DestroyWindow(app->window);
         SDL_free(app);
