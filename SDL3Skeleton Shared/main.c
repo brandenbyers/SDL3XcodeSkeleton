@@ -22,7 +22,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     
     SDL_SetHint("SDL_POWERSTATE_POLLING_INTERVAL", "5000"); /* Check power state every 5 seconds */
     
-    /* Initialize SDL */
+    /* Initialize SDL (touch events are automatically supported) */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) {
         return SDL_APP_FAILURE;
     }
@@ -182,6 +182,25 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             if (event->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) {
                 return SDL_APP_SUCCESS;
             }
+            break;
+            
+            /* Touch event handling for virtual joystick */
+        case SDL_EVENT_FINGER_DOWN:
+            process_touch_down(&game->input,
+                               event->tfinger.x * WINDOW_WIDTH,
+                               event->tfinger.y * WINDOW_HEIGHT,
+                               event->tfinger.touchID);
+            break;
+            
+        case SDL_EVENT_FINGER_MOTION:
+            process_touch_motion(&game->input,
+                                 event->tfinger.x * WINDOW_WIDTH,
+                                 event->tfinger.y * WINDOW_HEIGHT,
+                                 event->tfinger.touchID);
+            break;
+            
+        case SDL_EVENT_FINGER_UP:
+            process_touch_up(&game->input, event->tfinger.touchID);
             break;
             
         case SDL_EVENT_WINDOW_RESIZED:

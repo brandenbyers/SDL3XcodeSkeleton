@@ -42,9 +42,9 @@
 
 /* Game timing configuration */
 #define LOGIC_TICK_RATE     60      /* Game logic updates per second */
-#define FRAMES_PER_TILE     3       /* Frames to move one tile */
+#define FRAMES_PER_TILE     6       /* Frames to move one tile */
 #define LOGIC_TICK_MS       (1000 / LOGIC_TICK_RATE)
-#define CORNER_BUFFER_FRAMES 2      /* Frames before tile end to accept corner input */
+#define CORNER_BUFFER_FRAMES 3      /* Frames before tile end to accept corner input */
 
 /* Energy management */
 #define BATTERY_SAVER_FPS   30      /* Lower frame rate when on battery */
@@ -62,6 +62,7 @@
 #define KEY_DOWN            0x08
 #define HAS_BUFFERED        0x10
 #define RESTART_REQ         0x20
+#define TOUCH_ACTIVE        0x40    /* New flag for touch controls */
 
 /*
  * Type Definitions
@@ -87,9 +88,16 @@ typedef enum {
 
 /* Input state structure */
 typedef struct {
-    uint8_t key_states;        /* Bit 0-3: direction keys, 4: has_buffered, 5: restart */
+    uint8_t key_states;        /* Bit 0-3: direction keys, 4: has_buffered, 5: restart, 6: touch_active */
     uint8_t current_dir;       /* Current direction (0-3, 255 for none) */
     uint8_t buffered_dir;      /* Buffered direction (0-3, 255 for none) */
+    
+    /* Touch state tracking */
+    float touch_start_x;       /* Initial touch X position */
+    float touch_start_y;       /* Initial touch Y position */
+    float touch_current_x;     /* Current touch X position */
+    float touch_current_y;     /* Current touch Y position */
+    uint32_t touch_finger_id;  /* Finger ID for multi-touch tracking */
 } InputState;
 
 /* Movement state - 8 bytes */
@@ -186,6 +194,14 @@ bool is_restart_requested(const InputState* input);
 void set_restart_requested(InputState* input, bool requested);
 void initialize_gamepad(AppState* app);
 
+/* Touch input functions (input.c) */
+void process_touch_down(InputState* input, float x, float y, uint32_t finger_id);
+void process_touch_motion(InputState* input, float x, float y, uint32_t finger_id);
+void process_touch_up(InputState* input, uint32_t finger_id);
+bool is_touch_active(const InputState* input);
+void set_touch_active(InputState* input, bool active);
+Direction get_touch_direction(const InputState* input);
+
 /* Rendering functions (render.c) */
 void render_game(AppState* app);
 void create_textures(AppState* app);
@@ -193,6 +209,7 @@ void destroy_textures(AppState* app);
 void create_background_texture(AppState* app);
 void configure_rendering(AppState* app);
 void update_fps(AppState* app);
+void render_touch_controls(AppState* app);  /* New function for touch UI */
 
 /* Platform-specific functions (platform.c) */
 bool is_running_on_battery(void);

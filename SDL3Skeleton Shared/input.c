@@ -163,3 +163,128 @@ void initialize_gamepad(AppState* app) {
     
     SDL_free(gamepads);
 }
+
+/*
+ * Touch Input Functions
+ */
+
+/* Check if touch is active */
+bool is_touch_active(const InputState* input) {
+    return (input->key_states & TOUCH_ACTIVE) != 0;
+}
+
+/* Set touch active state */
+void set_touch_active(InputState* input, bool active) {
+    input->key_states = (input->key_states & ~TOUCH_ACTIVE) | (active ? TOUCH_ACTIVE : 0);
+}
+
+/* Process touch down event */
+void process_touch_down(InputState* input, float x, float y, uint32_t finger_id) {
+    /* Store initial touch position as joystick center */
+    input->touch_start_x = x;
+    input->touch_start_y = y;
+    input->touch_current_x = x;
+    input->touch_current_y = y;
+    input->touch_finger_id = finger_id;
+    
+    /* Set touch as active */
+    set_touch_active(input, true);
+    
+    /* No direction yet on initial touch */
+    /* We'll wait for motion to determine direction */
+}
+
+/* Process touch motion event */
+void process_touch_motion(InputState* input, float x, float y, uint32_t finger_id) {
+    /* Ignore if not the active finger */
+    if (!is_touch_active(input) || input->touch_finger_id != finger_id) {
+        return;
+    }
+    
+    /* Update current position */
+    input->touch_current_x = x;
+    input->touch_current_y = y;
+    
+    /* Calculate delta from start */
+    float dx = x - input->touch_start_x;
+    float dy = y - input->touch_start_y;
+    
+    /* Convert to direction based on greatest displacement (digital control) */
+    /* Using a small deadzone to prevent accidental movements */
+    const float deadzone = 10.0f;
+    
+    /* Clear existing direction keys from touch */
+    input->key_states &= ~0x0F;  /* Clear direction bits */
+    
+    /* Determine the dominant direction */
+    if (fabsf(dx) > deadzone || fabsf(dy) > deadzone) {
+        /* Determine if horizontal or vertical movement dominates */
+        if (fabsf(dx) > fabsf(dy)) {
+            /* Horizontal movement */
+            if (dx > 0) {
+                /* Right */
+                set_key_state(input, DIR_RIGHT, true);
+                input->current_dir = DIR_RIGHT;
+            } else {
+                /* Left */
+                set_key_state(input, DIR_LEFT, true);
+                input->current_dir = DIR_LEFT;
+            }
+        } else {
+            /* Vertical movement */
+            if (dy > 0) {
+                /* Down (SDL coordinates have Y increasing downward) */
+                set_key_state(input, DIR_DOWN, true);
+                input->current_dir = DIR_DOWN;
+            } else {
+                /* Up */
+                set_key_state(input, DIR_UP, true);
+                input->current_dir = DIR_UP;
+            }
+        }
+    }
+}
+
+/* Process touch up event */
+void process_touch_up(InputState* input, uint32_t finger_id) {
+    /* Ignore if not the active finger */
+    if (!is_touch_active(input) || input->touch_finger_id != finger_id) {
+        return;
+    }
+    
+    /* Clear direction keys that were set by touch */
+    input->key_states &= ~0x0F;  /* Clear direction bits */
+    
+    /* Set touch as inactive */
+    set_touch_active(input, false);
+    
+    /* Reset current direction if it was set by touch */
+    input->current_dir = DIR_NONE;
+}
+
+/* Get the current touch direction */
+Direction get_touch_direction(const InputState* input) {
+    if (!is_touch_active(input)) {
+        return DIR_NONE;
+    }
+    
+    /* Calculate delta from start */
+    float dx = input->touch_current_x - input->touch_start_x;
+    float dy = input->touch_current_y - input->touch_start_y;
+    
+    /* Convert to direction based on greatest displacement */
+    const float deadzone = 10.0f;
+    
+    if (fabsf(dx) > deadzone || fabsf(dy) > deadzone) {
+        /* Determine if horizontal or vertical movement dominates */
+        if (fabsf(dx) > fabsf(dy)) {
+            /* Horizontal movement */
+            return (dx > 0) ? DIR_RIGHT : DIR_LEFT;
+        } else {
+            /* Vertical movement */
+            return (dy > 0) ? DIR_DOWN : DIR_UP;
+        }
+    }
+    
+    return DIR_NONE;
+}

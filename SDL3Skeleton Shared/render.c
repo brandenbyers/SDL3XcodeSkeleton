@@ -18,6 +18,7 @@ const SDL_Color CELL_COLORS[CELL_MAX] = {
 };
 const SDL_Color PLAYER_COLOR = { 0, 255, 0, 255 };  /* Player: green */
 const SDL_Color GRID_LINE_COLOR = { 32, 32, 32, 255 }; /* Grid lines: dark gray */
+const SDL_Color TOUCH_UI_COLOR = { 255, 255, 255, 128 }; /* Touch UI: semi-transparent white */
 
 /*
  * Texture Creation Functions
@@ -133,6 +134,68 @@ void update_fps(AppState* app) {
     }
 }
 
+/* Render touch controls visualization */
+void render_touch_controls(AppState* app) {
+    InputState* input = &app->game.input;
+    
+    /* Only render if touch is active */
+    if (!is_touch_active(input)) {
+        return;
+    }
+    
+    SDL_Renderer* renderer = app->renderer;
+    
+    /* Set color for touch UI elements */
+    SDL_SetRenderDrawColor(renderer,
+                           TOUCH_UI_COLOR.r,
+                           TOUCH_UI_COLOR.g,
+                           TOUCH_UI_COLOR.b,
+                           TOUCH_UI_COLOR.a);
+    
+    /* Draw joystick center (starting position) */
+    SDL_FRect center_rect = {
+        input->touch_start_x - 15.0f,
+        input->touch_start_y - 15.0f,
+        30.0f, 30.0f
+    };
+    SDL_RenderFillRect(renderer, &center_rect);
+    
+    /* Draw current touch position */
+    SDL_FRect touch_rect = {
+        input->touch_current_x - 20.0f,
+        input->touch_current_y - 20.0f,
+        40.0f, 40.0f
+    };
+    SDL_RenderRect(renderer, &touch_rect);
+    
+    /* Draw line connecting them */
+    SDL_RenderLine(renderer,
+                   input->touch_start_x, input->touch_start_y,
+                   input->touch_current_x, input->touch_current_y);
+    
+    /* Draw direction indicator */
+    Direction touch_dir = get_touch_direction(input);
+    
+    if (touch_dir != DIR_NONE) {
+        /* Calculate position for direction label */
+        float mid_x = (input->touch_start_x + input->touch_current_x) / 2;
+        float mid_y = (input->touch_start_y + input->touch_current_y) / 2 - 30;
+        
+        /* We would draw text here if we had text rendering capabilities */
+        /* For now, just draw a circle at midpoint to indicate active direction */
+        SDL_SetRenderDrawColor(renderer, 255, 255, 0, 192);
+        
+        const float radius = 10.0f;
+        for (float angle = 0; angle < 6.28f; angle += 0.2f) {
+            float x1 = mid_x + sinf(angle) * radius;
+            float y1 = mid_y + cosf(angle) * radius;
+            float x2 = mid_x + sinf(angle + 0.2f) * radius;
+            float y2 = mid_y + cosf(angle + 0.2f) * radius;
+            SDL_RenderLine(renderer, x1, y1, x2, y2);
+        }
+    }
+}
+
 /* Simplified render function with minimal draw calls */
 void render_game(AppState* app) {
     GameState* game = &app->game;
@@ -185,6 +248,17 @@ void render_game(AppState* app) {
                            PLAYER_COLOR.b,
                            PLAYER_COLOR.a);
     SDL_RenderFillRect(renderer, &rect);
+    
+    /* 4. Render touch controls visualization (iOS) */
+#if defined(__APPLE__) && (TARGET_OS_IOS)
+    /* On iOS, always render touch controls */
+    render_touch_controls(app);
+#else
+    /* On other platforms, only render when touch is active */
+    if (is_touch_active(&game->input)) {
+        render_touch_controls(app);
+    }
+#endif
     
     /* Present the rendered frame */
     SDL_RenderPresent(renderer);
