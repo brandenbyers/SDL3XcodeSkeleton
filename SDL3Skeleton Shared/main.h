@@ -136,6 +136,7 @@ typedef struct {
     /* Power management */
     bool is_on_battery;            /* True if running on battery */
     bool is_in_background;         /* True if app is in background */
+    bool is_paused;                /* True if game is paused (zero processing) */
     int target_fps;                /* Target FPS based on power state */
     
     /* Performance tracking */
@@ -154,6 +155,7 @@ extern const int8_t DIR_OFFSET_Y[4];  /* RIGHT, UP, LEFT, DOWN */
 extern const SDL_Color CELL_COLORS[CELL_MAX];  /* Colors for different cell types */
 extern const SDL_Color PLAYER_COLOR;           /* Player color */
 extern const SDL_Color GRID_LINE_COLOR;        /* Grid line color */
+extern const SDL_Color PAUSED_OVERLAY_COLOR;   /* Semi-transparent overlay for paused state */
 
 /*
  * Function Declarations
@@ -199,11 +201,5 @@ float get_time_scale(const AppState* app);
 void set_time_scale(AppState* app, uint8_t scale_index);
 void toggle_fullscreen(AppState* app);
 void cycle_time_scale(AppState* app);
-
-/* SDL App Callbacks (main.c) */
-SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]);
-SDL_AppResult SDL_AppIterate(void* appstate);
-SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event);
-void SDL_AppQuit(void* appstate, SDL_AppResult result);
 
 #endif /* GAME_H */

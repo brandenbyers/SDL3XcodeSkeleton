@@ -2,6 +2,7 @@
  * main.c - Entry point and main app callbacks for the Bit-Twiddled Game Engine
  *
  * This file contains the SDL app callbacks and main entry point for the application.
+ * Optimized for minimal CPU usage with pause functionality.
  */
 
 #define SDL_MAIN_USE_CALLBACKS 1
@@ -23,7 +24,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     SDL_SetHint("SDL_POWERSTATE_POLLING_INTERVAL", "5000"); /* Check power state every 5 seconds */
     
     /* Initialize SDL */
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK) < 0) {
+        SDL_Log("Failed to initialize SDL: %s", SDL_GetError());
         return SDL_APP_FAILURE;
     }
     
@@ -36,6 +38,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     *appstate = app;
     app->app_flags = 0;  /* Not fullscreen, normal time scale */
     app->target_fps = LOGIC_TICK_RATE;  /* Start with standard frame rate */
+    app->is_paused = false;  /* Start unpaused */
     
     /* Create window and renderer with better defaults */
     Uint32 window_flags = 0;
@@ -76,7 +79,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     initialize_gamepad(app);
     
     /* Initialize FPS counter */
-    app->last_fps_time = SDL_GetTicks();
+    app->last_fps_time = (Uint32)SDL_GetTicks();
     app->fps_count = 0;
     app->current_fps = 0;
     
@@ -95,6 +98,12 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     AppState* app = (AppState*)appstate;
     GameState* game = &app->game;
     
+    /* If paused and backgrounded, do minimal work to save power */
+    if (app->is_paused && app->is_in_background) {
+        SDL_Delay(100);  /* Sleep for 100ms (10 FPS max) to save CPU */
+        return SDL_APP_CONTINUE;
+    }
+    
     /* Record start time for frame timing */
     Uint64 frame_start_time = SDL_GetTicks();
     
@@ -105,29 +114,39 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
         last_power_check = frame_start_time;
     }
     
-    /* Calculate elapsed time */
-    Uint64 current_time = frame_start_time;
-    int delta_time = (int)(current_time - game->last_tick_time);
-    game->last_tick_time = current_time;
-    
-    /* Apply time scaling */
-    delta_time = (int)(delta_time * get_time_scale(app));
-    
-    /* Check gamepad state every frame */
-    if (app->gamepad) {
-        process_gamepad_state(&game->input, app->gamepad);
+    /* Skip game logic updates when paused, but still render */
+    if (!app->is_paused) {
+        /* Calculate elapsed time */
+        Uint64 current_time = frame_start_time;
+        int delta_time = (int)(current_time - game->last_tick_time);
+        game->last_tick_time = current_time;
+        
+        /* Apply time scaling */
+        delta_time = (int)(delta_time * get_time_scale(app));
+        
+        /* Check gamepad state every frame */
+        if (app->gamepad) {
+            process_gamepad_state(&game->input, app->gamepad);
+        }
+        
+        /* Add to accumulator */
+        game->accumulated_time += delta_time;
+        
+        /* Run fixed time step updates */
+        int max_steps = 3;  /* Limit to avoid spiral of death if severely behind */
+        while (game->accumulated_time >= LOGIC_TICK_MS && max_steps > 0) {
+            update_game_logic_fixed_step(game);
+            game->accumulated_time -= LOGIC_TICK_MS;
+            max_steps--;
+        }
+        
+        /* If we're severely behind, reset the accumulator */
+        if (game->accumulated_time > LOGIC_TICK_MS * 5) {
+            game->accumulated_time = 0;
+        }
     }
     
-    /* Add to accumulator */
-    game->accumulated_time += delta_time;
-    
-    /* Run fixed time step updates */
-    while (game->accumulated_time >= LOGIC_TICK_MS) {
-        update_game_logic_fixed_step(game);
-        game->accumulated_time -= LOGIC_TICK_MS;
-    }
-    
-    /* Render the game */
+    /* Render the game (even when paused, to show the pause overlay) */
     render_game(app);
     
     /* Calculate frame time and sleep if ahead of schedule */
@@ -162,19 +181,29 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
                 toggle_fullscreen(app);
             } else if (event->key.scancode == SDL_SCANCODE_T) {
                 cycle_time_scale(app);
+            } else if (event->key.scancode == SDL_SCANCODE_P) {
+                /* Toggle pause state */
+                app->is_paused = !app->is_paused;
+                SDL_Log("Game %s", app->is_paused ? "Paused" : "Resumed");
             } else {
                 /* Skip processing repeated key events if frame count is even to reduce CPU load */
                 if (event->key.repeat > 0 && game->frame_count % 2 != 0) {
                     break;
                 }
-                process_key_event(&game->input, event->key.scancode, true);
+                
+                /* Only process game input when not paused */
+                if (!app->is_paused) {
+                    process_key_event(&game->input, event->key.scancode, true);
+                }
             }
             break;
         }
             
         case SDL_EVENT_KEY_UP:
-            /* Handle key release */
-            process_key_event(&game->input, event->key.scancode, false);
+            /* Only process game input when not paused */
+            if (!app->is_paused) {
+                process_key_event(&game->input, event->key.scancode, false);
+            }
             break;
             
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -190,11 +219,21 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
             app->is_in_background = false;
+            /* Only auto-unpause if it was auto-paused due to backgrounding */
+            if (app->is_paused && app->is_in_background) {
+                app->is_paused = false;
+                SDL_Log("Game auto-resumed from background");
+            }
             update_power_state(app);
             break;
             
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             app->is_in_background = true;
+            /* Auto-pause when focus is lost */
+            if (!app->is_paused) {
+                app->is_paused = true;
+                SDL_Log("Game auto-paused (backgrounded)");
+            }
             update_power_state(app);
             break;
             
@@ -217,6 +256,9 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
 
 /* Clean up on exit */
 void SDL_AppQuit(void* appstate, SDL_AppResult result) {
+    /* Avoid unused parameter warning */
+    (void)result;
+    
     if (appstate) {
         AppState* app = (AppState*)appstate;
         

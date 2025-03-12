@@ -18,6 +18,7 @@ const SDL_Color CELL_COLORS[CELL_MAX] = {
 };
 const SDL_Color PLAYER_COLOR = { 0, 255, 0, 255 };  /* Player: green */
 const SDL_Color GRID_LINE_COLOR = { 32, 32, 32, 255 }; /* Grid lines: dark gray */
+const SDL_Color PAUSED_OVERLAY_COLOR = { 128, 128, 128, 128 }; /* Semi-transparent gray */
 
 /*
  * Texture Creation Functions
@@ -112,6 +113,9 @@ void destroy_textures(AppState* app) {
 
 /* Configure renderer for proper scaling */
 void configure_rendering(AppState* app) {
+    /* Configure VSync through hints instead of explicit function calls in SDL3 */
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
+    
     SDL_SetRenderScale(app->renderer, 1.0f, 1.0f);
     SDL_SetRenderLogicalPresentation(app->renderer, WINDOW_WIDTH, WINDOW_HEIGHT,
                                      SDL_LOGICAL_PRESENTATION_LETTERBOX);
@@ -121,14 +125,16 @@ void configure_rendering(AppState* app) {
 void update_fps(AppState* app) {
     app->fps_count++;
     
-    uint64_t current_time = SDL_GetTicks();
+    Uint64 current_time = SDL_GetTicks();
     if (current_time - app->last_fps_time >= 1000) {
         app->current_fps = app->fps_count;
         app->fps_count = 0;
-        app->last_fps_time = current_time;
+        app->last_fps_time = (Uint32)current_time; /* Explicit cast */
         
         char title[64];
-        snprintf(title, sizeof(title), "Bit-Twiddled Game Engine - FPS: %d", app->current_fps);
+        snprintf(title, sizeof(title), "Bit-Twiddled Game Engine - FPS: %d %s",
+                 app->current_fps,
+                 app->is_paused ? "[PAUSED]" : "");
         SDL_SetWindowTitle(app->window, title);
     }
 }
@@ -185,6 +191,19 @@ void render_game(AppState* app) {
                            PLAYER_COLOR.b,
                            PLAYER_COLOR.a);
     SDL_RenderFillRect(renderer, &rect);
+    
+    /* 4. If paused, draw a semi-transparent overlay */
+    if (app->is_paused && !app->is_in_background) {
+        SDL_SetRenderDrawColor(renderer,
+                               PAUSED_OVERLAY_COLOR.r,
+                               PAUSED_OVERLAY_COLOR.g,
+                               PAUSED_OVERLAY_COLOR.b,
+                               PAUSED_OVERLAY_COLOR.a);
+        SDL_FRect overlay = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
+        SDL_RenderFillRect(renderer, &overlay);
+        
+        /* TODO: Add "PAUSED" text here if you have text rendering capabilities */
+    }
     
     /* Present the rendered frame */
     SDL_RenderPresent(renderer);

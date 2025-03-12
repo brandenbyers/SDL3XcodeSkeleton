@@ -14,13 +14,15 @@
  * Power Management Functions
  */
 
-
 /* Update power state and adjust settings accordingly */
 void update_power_state(AppState* app) {
-    /* Determine target FPS based on power state */
+    /* When in background, reduce FPS to save power */
     if (app->is_in_background) {
-        app->target_fps = BACKGROUND_FPS;
+        app->target_fps = BACKGROUND_FPS;  /* 10 FPS (for UI responsiveness) */
+        
+        /* We don't force pause here - that's handled in the event system */
     } else {
+        /* When in foreground, use normal framerate */
         app->target_fps = LOGIC_TICK_RATE;
     }
 }
