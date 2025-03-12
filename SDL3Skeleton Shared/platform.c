@@ -46,43 +46,57 @@ bool is_running_on_battery(void) {
 #endif
 }
 
-/* Update power state and adjust settings accordingly */
+/* Update power state with ultra-aggressive power saving */
 void update_power_state(AppState* app) {
     /* Check if we're running on battery */
     app->is_on_battery = is_running_on_battery();
     
-    /* Frame rate and process scheduling based on activity state */
+    /* Adjust based on activity state */
     if (app->is_in_background) {
-        app->target_fps = BACKGROUND_FPS;  /* Very low FPS when completely hidden */
+        /* When in background, use extreme low-power settings */
+        app->power_mode = POWER_MODE_EFFICIENT;
+        app->target_fps = 0; /* 0 FPS means "only render on demand" */
     }
     else {
-        /* Always maintain 60 FPS for active gameplay (matches Game Boy approach) */
-        app->target_fps = LOGIC_TICK_RATE;  /* Always target 60 FPS for smoothness */
+        /* Check idle state */
+        uint64_t idle_time = SDL_GetTicks() - app->last_activity_time;
         
-        /* Instead of reducing FPS, we adjust how often we process work */
-        if (app->is_on_battery) {
-            /* On battery, be more aggressive with sleep scheduling between frames */
-            if (app->power_mode == 2) { /* Efficient/idle mode */
-                /* Use longer sleeps between render checks - don't reduce FPS */
-                SDL_SetHint("SDL_METAL_FORCE_DEPTH_STENCIL_SHARED", "1"); /* Further optimize Metal */
-            }
+        if (idle_time > 10000) {
+            /* After 10 seconds of inactivity, go to efficient mode */
+            app->power_mode = POWER_MODE_EFFICIENT;
+            app->target_fps = 0; /* Only render on demand */
+            
+            /* When ultra idle, actively disable VSync to reduce GPU power */
+            SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
+        }
+        else if (idle_time > 3000) {
+            /* After 3 seconds of inactivity, go to balanced mode */
+            app->power_mode = POWER_MODE_BALANCED;
+            app->target_fps = 30; /* Cap at 30 FPS */
+        }
+        else {
+            /* During active use, maintain performance mode */
+            app->power_mode = POWER_MODE_PERFORMANCE;
+            app->target_fps = 60; /* Full 60 FPS */
         }
     }
     
-    /* Configure renderer based on power state */
-    configure_rendering(app);
-    
-    /* Log power state changes */
-    static bool was_on_battery = false;
-    if (was_on_battery != app->is_on_battery) {
-        was_on_battery = app->is_on_battery;
-        SDL_Log("Power source changed: %s", app->is_on_battery ? "Battery" : "AC Power");
+    /* Force render after power state changes */
+    static uint8_t last_power_mode = 255; /* Invalid initial value */
+    if (last_power_mode != app->power_mode) {
+        app->needs_render = true;
+        last_power_mode = app->power_mode;
         
-        /* Reset activity timer to ensure we're in the right power mode */
-        app->last_activity_time = SDL_GetTicks();
+        /* Reconfigure renderer for new power settings */
+        configure_rendering(app);
+        
+        /* Log power mode changes */
+        const char* mode_names[] = {"Performance", "Balanced", "Efficient"};
+        SDL_Log("Power mode changed to: %s (Battery: %s)",
+                mode_names[app->power_mode],
+                app->is_on_battery ? "Yes" : "No");
     }
 }
-
 /*
  * Time and Display Functions
  */
@@ -127,16 +141,41 @@ void cycle_time_scale(AppState* app) {
     SDL_Log("Time scale: %s", scale_names[next]);
 }
 
-/* Reset activity timer to mark user interaction */
+/* Reset activity timer with mode switching */
 void reset_activity_timer(AppState* app) {
-    app->last_activity_time = SDL_GetTicks();
+    uint64_t current_time = SDL_GetTicks();
     
-    /* Return to performance mode when user interacts */
-    if (app->power_mode > POWER_MODE_PERFORMANCE) {
-        app->power_mode = POWER_MODE_PERFORMANCE;
-        update_power_state(app);
+    /* Only register activity if significant time has passed (debouncing) */
+    if (current_time - app->last_activity_time > 100) {
+        app->last_activity_time = current_time;
+        
+        /* If we were in efficient mode, switch to performance mode immediately */
+        if (app->power_mode == POWER_MODE_EFFICIENT) {
+            app->power_mode = POWER_MODE_PERFORMANCE;
+            app->needs_render = true;
+            
+            /* Force immediate re-render after waking up */
+            render_game(app);
+            app->last_render_time = current_time;
+            
+            /* Reconfigure rendering for performance */
+            configure_rendering(app);
+        }
     }
-    
-    /* Mark as needing render */
-    app->needs_render = true;
+}
+
+/* Advanced platform-specific sleep function */
+void platform_optimized_sleep(uint32_t milliseconds) {
+#if defined(__APPLE__) && TARGET_OS_MAC && !TARGET_OS_IOS && !TARGET_OS_TV
+    /* On macOS, use more precise sleep for longer durations */
+    if (milliseconds > 100) {
+        SDL_Delay(milliseconds);
+    } else {
+        /* For short durations, use SDL_Delay with minimal time */
+        SDL_Delay(1);
+    }
+#else
+    /* Default to SDL_Delay on other platforms */
+    SDL_Delay(milliseconds);
+#endif
 }

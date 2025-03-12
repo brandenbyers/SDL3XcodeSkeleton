@@ -20,28 +20,37 @@
 
 /* Initialize the application */
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
-    /* Set hints for optimal performance */
-    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");  /* Use Metal on Apple platforms */
-    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");       /* Enable VSync */
-    SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1"); /* Allow screensaver for energy saving */
+    /* Set hints for absolute minimum CPU usage */
     
-    /* Additional hints to reduce CPU usage */
-    SDL_SetHint("SDL_HINT_RENDER_BATCHING", "1");  /* Enable render batching */
-    SDL_SetHint("SDL_HINT_RENDER_LINE_METHOD", "3"); /* Fastest line drawing method */
-    SDL_SetHint("SDL_HINT_EVENT_LOGGING", "0");    /* Disable event logging */
-    SDL_SetHint("SDL_HINT_POLL_SENTINEL", "1");    /* Use poll sentinel if available */
+    /* Core rendering hints */
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");               /* Use Metal on Apple */
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");                    /* Enable VSync */
+    SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");         /* Allow screensaver */
     
-    /* Energy efficiency hints */
-    SDL_SetHint("SDL_POWERSTATE_POLLING_INTERVAL", "5000"); /* Check power state every 5 seconds */
+    /* Event and render batching */
+    SDL_SetHint("SDL_HINT_RENDER_BATCHING", "1");               /* Enable batching */
+    SDL_SetHint("SDL_HINT_RENDER_LINE_METHOD", "3");            /* Fastest line method */
+    SDL_SetHint("SDL_HINT_EVENT_LOGGING", "0");                 /* Disable logging */
+    SDL_SetHint("SDL_HINT_POLL_SENTINEL", "1");                 /* Poll sentinel */
     
-    /* New: Metal-specific optimizations when available */
-    SDL_SetHint("SDL_METAL_PREFER_LOW_POWER_DEVICE", "1"); /* Prefer integrated GPU on laptops */
+    /* Metal specific power saving */
+    SDL_SetHint("SDL_METAL_PREFER_LOW_POWER_DEVICE", "1");      /* Prefer integrated GPU */
+    SDL_SetHint("SDL_METAL_MINIMIZE_TARGET_CHANGES", "1");      /* Minimize target changes */
     
-    /* Initialize SDL with only what we need */
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+    /* New: Critical power optimization hints */
+    SDL_SetHint("SDL_POWERSTATE_POLLING_INTERVAL", "10000");    /* Check power every 10s */
+    SDL_SetHint("SDL_RENDER_DIRECT_MODES", "1");                /* Use direct rendering when available */
+    SDL_SetHint("SDL_RENDER_LOGICAL_SIZE_MODE", "0");           /* Disable logical size scaling */
+    SDL_SetHint("SDL_FRAMEBUFFER_ACCELERATION", "1");           /* Force acceleration */
+    SDL_SetHint("SDL_HINT_RENDER_DRIVER_DISCARD_CLEAR", "1");   /* Optimize clear operation */
+    
+    /* Critical: Only initialize subsystems we absolutely need */
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_Log("Failed to initialize SDL: %s", SDL_GetError());
         return SDL_APP_FAILURE;
     }
+    
+    /* Initialize gamepad later, only when needed */
     
     /* Allocate application state */
     AppState* app = SDL_calloc(1, sizeof(AppState));
@@ -50,42 +59,38 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     }
     
     *appstate = app;
-    app->app_flags = 0;  /* Not fullscreen, normal time scale */
-    app->power_mode = 0; /* Start in performance mode, will adjust as needed */
-    app->target_fps = LOGIC_TICK_RATE;  /* Start with standard frame rate */
-    app->is_paused = false;  /* Start unpaused */
-    app->needs_render = true; /* Need initial render */
-    app->game_state_changed = true; /* Force initial update */
-    app->last_activity_time = SDL_GetTicks(); /* Initialize last activity time */
-    app->dirty_region_count = 0; /* No dirty regions yet */
+    app->app_flags = 0;
+    app->power_mode = POWER_MODE_PERFORMANCE;     /* Start in performance mode */
+    app->target_fps = LOGIC_TICK_RATE;
+    app->is_paused = false;
+    app->needs_render = true;                     /* Need initial render */
+    app->game_state_changed = true;               /* Force initial update */
+    app->last_activity_time = SDL_GetTicks();     /* Initialize activity time */
+    app->dirty_region_count = 0;
     
-    /* Create window and renderer with better defaults */
-    Uint32 window_flags = 0;
+    /* Create window */
+    Uint32 window_flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
     
 #if defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_TV)
-    window_flags = SDL_WINDOW_FULLSCREEN;
+    window_flags |= SDL_WINDOW_FULLSCREEN;
     app->app_flags |= APP_FULLSCREEN;
 #endif
-    
-    /* Add SDL_WINDOW_HIGH_PIXEL_DENSITY which improves performance on Retina displays */
-    window_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
     
     app->window = SDL_CreateWindow("Bit-Twiddled Game Engine", WINDOW_WIDTH, WINDOW_HEIGHT, window_flags);
     if (!app->window) {
         return SDL_APP_FAILURE;
     }
     
-    /* Create renderer - try metal first */
+    /* Create metal renderer if available, fallback otherwise */
     app->renderer = SDL_CreateRenderer(app->window, "metal");
     if (!app->renderer) {
-        /* Fall back to default renderer if Metal isn't available */
         app->renderer = SDL_CreateRenderer(app->window, NULL);
         if (!app->renderer) {
             return SDL_APP_FAILURE;
         }
     }
     
-    /* Check power state */
+    /* Check power state and apply power settings */
     update_power_state(app);
     
     /* Configure rendering */
@@ -97,28 +102,25 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     /* Initialize last_render_time */
     app->last_render_time = SDL_GetTicks();
     
-    /* Create textures (needs initialized game state) */
+    /* Create textures */
     create_textures(app);
     
-    /* Initialize gamepad */
-    initialize_gamepad(app);
+    /* Initialize gamepad (defer until actually needed) */
+    app->gamepad = NULL;
+    app->gamepad_id = 0;
     
     /* Initialize FPS counter */
-    app->last_fps_time = (Uint32)SDL_GetTicks();
+    app->last_fps_time = SDL_GetTicks();
     app->fps_count = 0;
     app->current_fps = 0;
     
     /* Seed random number generator */
     srand((unsigned int)SDL_GetTicks());
     
-    /* Log renderer information */
+    /* Log renderer info */
     const char* renderer_name = SDL_GetRendererName(app->renderer);
-    SDL_Log("Using renderer: %s", renderer_name ? renderer_name : "Unknown");
-    
-    /* Enable power-saving behaviors in Metal renderer */
-    if (renderer_name && SDL_strstr(renderer_name, "metal")) {
-        SDL_Log("Applying Metal-specific power optimizations");
-    }
+    SDL_Log("Using renderer: %s with ultra-efficient power management",
+            renderer_name ? renderer_name : "Unknown");
     
     return SDL_APP_CONTINUE;
 }
@@ -128,7 +130,9 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
     AppState* app = (AppState*)appstate;
     GameState* game = &app->game;
     
-    /* Update last activity time for any meaningful event */
+    /* Critical activity events that should wake up the game */
+    bool is_activity_event = false;
+    
     switch (event->type) {
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP:
@@ -138,16 +142,38 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
         case SDL_EVENT_MOUSE_MOTION:
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP:
-            app->last_activity_time = SDL_GetTicks();
-            app->needs_render = true;  /* Force render after user input */
+            is_activity_event = true;
             break;
     }
     
+    /* Reset activity timer for any user interaction */
+    if (is_activity_event) {
+        /* Only initialize gamepad on first gamepad event */
+        if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && app->gamepad == NULL) {
+            initialize_gamepad(app);
+        }
+        
+        reset_activity_timer(app);
+        
+        /* In efficient mode, force immediate render after user input */
+        if (app->power_mode == POWER_MODE_EFFICIENT) {
+            app->needs_render = true;
+            app->power_mode = POWER_MODE_PERFORMANCE;
+            configure_rendering(app);
+        }
+    }
+    
+    /* Handle specific events */
     switch (event->type) {
         case SDL_EVENT_QUIT:
             return SDL_APP_SUCCESS;
             
         case SDL_EVENT_KEY_DOWN: {
+            /* Critical optimization: Skip repeated keys entirely */
+            if (event->key.repeat > 0) {
+                break;
+            }
+            
             /* Handle keyboard input */
             if (event->key.scancode == SDL_SCANCODE_ESCAPE || event->key.scancode == SDL_SCANCODE_Q) {
                 return SDL_APP_SUCCESS;
@@ -159,23 +185,13 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             } else if (event->key.scancode == SDL_SCANCODE_P) {
                 /* Toggle pause state */
                 app->is_paused = !app->is_paused;
-                SDL_Log("Game %s", app->is_paused ? "Paused" : "Resumed");
                 app->needs_render = true;
+                SDL_Log("Game %s", app->is_paused ? "Paused" : "Resumed");
             } else {
-                /* Ignore repeated key events */
-                if (event->key.repeat > 0) {
-                    break;
-                }
-                
                 /* Only process game input when not paused */
                 if (!app->is_paused) {
                     process_key_event(&game->input, event->key.scancode, true);
-                    
-                    /* Immediately mark as needing update */
                     app->game_state_changed = true;
-                    
-                    /* Wake up from low-power mode */
-                    app->power_mode = 0;
                 }
             }
             break;
@@ -196,46 +212,50 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
             app->is_in_background = false;
-            /* Only auto-unpause if it was auto-paused due to backgrounding */
             if (app->is_paused && app->was_auto_paused) {
                 app->is_paused = false;
                 app->was_auto_paused = false;
-                SDL_Log("Game auto-resumed from background");
                 app->needs_render = true;
+                SDL_Log("Game auto-resumed from background");
             }
             update_power_state(app);
             break;
             
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             app->is_in_background = true;
-            /* Auto-pause when focus is lost */
             if (!app->is_paused) {
                 app->is_paused = true;
                 app->was_auto_paused = true;
-                SDL_Log("Game auto-paused (backgrounded)");
                 app->needs_render = true;
+                SDL_Log("Game auto-paused (backgrounded)");
             }
             update_power_state(app);
             break;
             
         case SDL_EVENT_GAMEPAD_ADDED:
+            /* Only initialize gamepad if we need it */
+            if (app->gamepad == NULL) {
+                initialize_gamepad(app);
+            }
+            break;
+            
         case SDL_EVENT_GAMEPAD_REMOVED:
-            /* Re-initialize gamepad if connection changes */
+            /* Clean up gamepad resources */
             if (app->gamepad) {
                 SDL_CloseGamepad(app->gamepad);
                 app->gamepad = NULL;
             }
-            initialize_gamepad(app);
             break;
             
         default:
+            /* Ignore all other events completely */
             break;
     }
     
     return SDL_APP_CONTINUE;
 }
 
-/* Main game loop with event waiting for maximum efficiency */
+/* Main game loop with true Game Boy-like sleep strategy */
 SDL_AppResult SDL_AppIterate(void* appstate) {
     AppState* app = (AppState*)appstate;
     GameState* game = &app->game;
@@ -243,69 +263,58 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     /* Record current time */
     uint64_t current_time = SDL_GetTicks();
     
-    /* Detect idle state - if no activity for 3 seconds, enter low-power mode */
+    /* Detect idle state */
     bool is_idle = (current_time - app->last_activity_time > 3000);
     
-    /* Use Game Boy style approach - maintain frame rate but only do work when needed */
+    /* ========== RADICAL POWER SAVING APPROACH ========== */
     
-    /* Determine appropriate update strategy based on state */
+    /* APPROACH: Completely surrender CPU when possible using two-level scheduling */
+    
     if (app->is_paused) {
-        /* When paused, we can use very long sleeps (200ms between checks) */
-        app->power_mode = 2; /* Efficient mode */
-        SDL_Delay(200);
-        return SDL_APP_CONTINUE; /* Early exit - nothing to do when paused */
+        /* When paused, we don't need to do ANYTHING - sleep as long as possible */
+        SDL_Delay(500); /* Sleep for 500ms - extremely long sleep to release CPU */
+        return SDL_APP_CONTINUE;
     }
-    else if (is_idle && !game->player.is_moving) {
-        /* When idle and not moving, preserve 60 FPS capacity but check less often */
-        app->power_mode = 2; /* Efficient mode */
-        
-        /* Check for updates 6 times per second, but be ready to jump to 60 FPS instantly */
-        static Uint64 last_idle_check = 0;
-        if (current_time - last_idle_check < 166) { /* ~6 Hz check rate */
-            SDL_Delay(1); /* Minimal sleep, surrender CPU slice */
-            return SDL_APP_CONTINUE; /* Early exit - nothing has changed */
+    
+    /*
+     * LEVEL 1: Process scheduling - determine if we should even do any work this cycle
+     * This dramatically reduces how often we run game logic and even check for rendering
+     */
+    if (is_idle && !game->player.is_moving) {
+        /* When completely idle, check state only 2 times per second (500ms intervals) */
+        static uint64_t last_idle_check = 0;
+        if (current_time - last_idle_check < 500) {
+            SDL_Delay(100); /* Long sleep when idle */
+            return SDL_APP_CONTINUE; /* Skip entire iteration - exit immediately */
         }
         last_idle_check = current_time;
-    }
-    else if (!game->player.is_moving && !app->game_state_changed) {
-        /* When not moving but still interactive, check more frequently */
-        app->power_mode = 1; /* Balanced mode */
         
-        /* Check for updates 20 times per second while maintaining 60 FPS capacity */
-        static Uint64 last_standby_check = 0;
-        if (current_time - last_standby_check < 50) { /* ~20 Hz check rate */
-            SDL_Delay(1); /* Minimal sleep, surrender CPU slice */
-            return SDL_APP_CONTINUE; /* Early exit - nothing has changed */
+        /* Perform an immediate input check in case we missed any */
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            SDL_AppEvent(appstate, &event);
+            
+            /* If input occurred, break out and process normally */
+            if (event.type == SDL_EVENT_KEY_DOWN ||
+                event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+                app->last_activity_time = current_time;
+                app->power_mode = POWER_MODE_PERFORMANCE;
+                app->needs_render = true;
+                break;
+            }
         }
-        last_standby_check = current_time;
-    }
-    else {
-        /* During active gameplay, maintain full 60 FPS with efficient processing */
-        app->power_mode = 0; /* Performance mode */
     }
     
-    /* Check power state periodically (every 5 seconds) */
-    static Uint64 last_power_check = 0;
-    if (current_time - last_power_check > 5000) {
-        update_power_state(app);
-        last_power_check = current_time;
-    }
+    /*
+     * LEVEL 2: Only process game logic if something has actually changed
+     * This is our normal processing but with strict gating to prevent unnecessary work
+     */
+    bool update_needed = game->player.is_moving || app->game_state_changed;
     
-    /* Get elapsed time since last update */
-    int delta_time = (int)(current_time - game->last_tick_time);
-    
-    /* Only process game logic if state has changed or time for an update */
-    bool update_needed = app->game_state_changed ||
-    game->player.is_moving ||
-    (delta_time >= LOGIC_TICK_MS);
-    
-    if (!app->is_paused && update_needed) {
-        /* Only process gamepad when we need an update */
-        if (app->gamepad) {
-            process_gamepad_state(&game->input, app->gamepad);
-        }
-        
-        /* Reset last tick time */
+    if (update_needed) {
+        /* Process game logic only when needed */
+        int delta_time = (int)(current_time - game->last_tick_time);
         game->last_tick_time = current_time;
         
         /* Apply time scaling */
@@ -314,46 +323,64 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
         /* Add to accumulator */
         game->accumulated_time += delta_time;
         
-        /* Run fixed time step updates with limit to prevent spiral of death */
-        int max_steps = 3;
-        while (game->accumulated_time >= LOGIC_TICK_MS && max_steps > 0) {
+        /* Run fixed time step updates */
+        int max_steps = 1; /* Limit to a single physics step per frame */
+        if (game->accumulated_time >= LOGIC_TICK_MS) {
             update_game_logic_fixed_step(game);
-            game->accumulated_time -= LOGIC_TICK_MS;
-            max_steps--;
-            
-            /* Set flag to indicate game state changed */
-            app->game_state_changed = true;
+            game->accumulated_time = 0; /* Just reset to avoid drift */
             app->needs_render = true;
         }
+    }
+    
+    /*
+     * LEVEL 3: Only render if state has actually changed
+     * This prevents the 1 FPS renders when nothing is happening
+     */
+    if (app->needs_render) {
+        /*
+         * CRITICAL: Only allow rendering if at least 16ms (60fps) has passed
+         * since the last render, or the player is moving for smoothness
+         */
+        bool should_render =
+        (current_time - app->last_render_time >= 16) || /* Frame rate limiter */
+        game->player.is_moving;                         /* Smoother movement */
         
-        /* If severely behind, reset accumulator to avoid time debt */
-        if (game->accumulated_time > LOGIC_TICK_MS * 5) {
-            game->accumulated_time = 0;
+        if (should_render) {
+            render_game(app);
+            app->last_render_time = current_time;
+            app->needs_render = false;
+            app->game_state_changed = false;
         }
     }
     
-    /* Only render if needed */
-    if (app->needs_render ||
-        (app->is_paused && (current_time - app->last_render_time >= 200))) {
-        
-        render_game(app);
-        app->last_render_time = current_time;
-        app->needs_render = false;
-        app->game_state_changed = false;
+    /*
+     * LEVEL 4: Adaptive CPU surrender
+     * Sleep for the right amount of time based on power mode
+     */
+    uint32_t sleep_duration;
+    
+    if (app->power_mode == POWER_MODE_PERFORMANCE && game->player.is_moving) {
+        /* When actively moving, use very short sleeps for responsiveness */
+        sleep_duration = 1; /* Minimal sleep to allow 60fps */
+    }
+    else if (app->power_mode == POWER_MODE_BALANCED || !update_needed) {
+        /* When in balanced mode or no updates needed, sleep longer */
+        sleep_duration = 16; /* ~60fps, but sleep between frames */
+    }
+    else {
+        /* In efficient mode, surrender CPU for longest time */
+        sleep_duration = 100; /* Very long sleep */
     }
     
-    /* Calculate frame duration to determine sleep time */
-    uint64_t frame_end_time = SDL_GetTicks();
-    uint64_t frame_duration = frame_end_time - current_time;
-    uint64_t target_frame_time = 1000 / app->target_fps;
-    
-    /* Sleep for the remainder of the frame if we have time left */
-    if (frame_duration < target_frame_time) {
-        SDL_Delay((uint32_t)(target_frame_time - frame_duration));
+    /* Add a check to explicitly disable VSync when in efficient mode */
+    if (app->power_mode == POWER_MODE_EFFICIENT) {
+        SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0"); /* Disable VSync to avoid GPU waiting */
     } else {
-        /* Yield CPU if we're behind schedule */
-        SDL_Delay(1);
+        SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1"); /* Enable VSync for smooth motion */
     }
+    
+    /* Actually sleep */
+    SDL_Delay(sleep_duration);
     
     return SDL_APP_CONTINUE;
 }
