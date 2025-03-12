@@ -2,6 +2,7 @@
  * game.h - Main header file for the Bit-Twiddled Game Engine
  *
  * This header contains all declarations for the game engine components.
+ * Optimized for minimal CPU usage and energy efficiency.
  */
 
 #ifndef GAME_H
@@ -48,6 +49,7 @@
 
 /* Energy management */
 #define BACKGROUND_FPS      10      /* Very low frame rate when in background */
+#define MAX_DIRTY_REGIONS   16      /* Maximum number of dirty regions to track */
 
 /* Bit Flags for app state */
 #define APP_FULLSCREEN      0x01
@@ -61,6 +63,11 @@
 #define KEY_DOWN            0x08
 #define HAS_BUFFERED        0x10
 #define RESTART_REQ         0x20
+
+/* Power modes for adaptive performance */
+#define POWER_MODE_PERFORMANCE  0   /* Full speed, optimal responsiveness */
+#define POWER_MODE_BALANCED     1   /* Good balance of performance and efficiency */
+#define POWER_MODE_EFFICIENT    2   /* Maximum energy efficiency */
 
 /*
  * Type Definitions
@@ -141,12 +148,22 @@ typedef struct {
     int target_fps;                /* Target FPS based on power state */
     
     /* Rendering timing */
-    Uint64 last_render_time;       /* Last time we rendered a frame */
+    uint64_t last_render_time;       /* Last time we rendered a frame */
     
     /* Performance tracking */
     uint64_t last_fps_time;        /* Last time FPS was calculated */
     int fps_count;                 /* Frame count for FPS calculation */
     int current_fps;               /* Current FPS value */
+    
+    /* Efficiency tracking */
+    bool needs_render;             /* Only render when true */
+    bool game_state_changed;       /* Track if game state changed */
+    uint64_t last_activity_time;   /* Time of last user activity */
+    uint8_t power_mode;            /* Current power mode (0=Performance, 1=Balanced, 2=Efficient) */
+    
+    /* Dirty region tracking */
+    SDL_FRect dirty_regions[MAX_DIRTY_REGIONS];   /* List of regions needing redraw */
+    int dirty_region_count;        /* Number of dirty regions */
 } AppState;
 
 /*
@@ -197,6 +214,7 @@ void destroy_textures(AppState* app);
 void create_background_texture(AppState* app);
 void configure_rendering(AppState* app);
 void update_fps(AppState* app);
+void add_dirty_region(AppState* app, float x, float y, float w, float h);
 
 /* Platform-specific functions (platform.c) */
 bool is_running_on_battery(void);
@@ -205,6 +223,7 @@ float get_time_scale(const AppState* app);
 void set_time_scale(AppState* app, uint8_t scale_index);
 void toggle_fullscreen(AppState* app);
 void cycle_time_scale(AppState* app);
+void reset_activity_timer(AppState* app);
 
 /* Note: process_event is declared as static inside main.c */
 

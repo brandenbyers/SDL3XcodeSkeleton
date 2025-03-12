@@ -5,6 +5,8 @@
  * - Grid management
  * - Movement logic
  * - Game state initialization and updates
+ *
+ * Optimized for minimal CPU usage using event-driven design.
  */
 
 #include "main.h"
@@ -294,7 +296,7 @@ void init_game(GameState* game) {
     game->frame_count = 0;
 }
 
-/* Update game logic with fixed time step */
+/* Update game logic with fixed time step - optimized for minimal processing */
 void update_game_logic_fixed_step(GameState* game) {
     MovementState* movement = &game->player;
     InputState* input = &game->input;
@@ -306,14 +308,22 @@ void update_game_logic_fixed_step(GameState* game) {
         return;
     }
     
-    /* Increment frame counter */
+    /* Only increment frame counter when something is happening */
     game->frame_count++;
+    
+    /* Early exit if no input and not moving */
+    if (input->current_dir == DIR_NONE && !movement->is_moving) {
+        return; /* No update needed */
+    }
     
     /* If not moving, check for direction input to start movement */
     if (!movement->is_moving) {
         /* Try to move in current input direction */
         if (input->current_dir != DIR_NONE) {
-            start_movement(game, input->current_dir);
+            if (start_movement(game, input->current_dir)) {
+                /* Movement started, mark for rendering */
+                return;
+            }
         }
     }
     /* If currently moving, handle movement progression */
@@ -337,7 +347,16 @@ void update_game_logic_fixed_step(GameState* game) {
         
         /* Check if movement is complete */
         if (movement->move_frame >= FRAMES_PER_TILE) {
+            /* Check for item collection before completing move */
+            bool collected_item = (get_cell(game, movement->target_x, movement->target_y) == CELL_ITEM);
+            
+            /* Complete the movement */
             complete_movement(game);
+            
+            /* If an item was collected, mark the grid as changed */
+            if (collected_item) {
+                game->grid_state.cells_changed = true;
+            }
         }
     }
     

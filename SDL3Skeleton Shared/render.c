@@ -3,9 +3,9 @@
  *
  * This file contains all rendering-related code, including:
  * - Texture management
- * - Scene drawing
- * - FPS counter
- * - Rendering configuration
+ * - Scene drawing with dirty rectangle tracking
+ * - Batch rendering for improved performance
+ * - Optimized rendering configuration
  */
 
 #include "main.h"
@@ -48,25 +48,43 @@ void create_background_texture(AppState* app) {
     SDL_SetRenderDrawColor(app->renderer, 0, 0, 0, 255);
     SDL_RenderClear(app->renderer);
     
-    /* Render walls */
-    SDL_FRect rect = { 0, 0, PIXEL_SCALE, PIXEL_SCALE };
+    /* Batch render walls */
+    SDL_FRect* wall_rects = NULL;
+    int wall_count = 0;
+    const int max_walls = GRID_SIZE; /* Maximum possible walls */
     
+    /* Allocate rectangle array once */
+    wall_rects = (SDL_FRect*)SDL_malloc(max_walls * sizeof(SDL_FRect));
+    if (!wall_rects) {
+        SDL_Log("Failed to allocate rectangles for wall rendering");
+        SDL_SetRenderTarget(app->renderer, NULL);
+        return;
+    }
+    
+    /* Collect all wall rectangles for batch rendering */
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            CellType cell = get_cell(game, x, y);
-            if (cell == CELL_WALL) {
-                rect.x = x * PIXEL_SCALE;
-                rect.y = y * PIXEL_SCALE;
-                
-                SDL_SetRenderDrawColor(app->renderer,
-                                       CELL_COLORS[CELL_WALL].r,
-                                       CELL_COLORS[CELL_WALL].g,
-                                       CELL_COLORS[CELL_WALL].b,
-                                       CELL_COLORS[CELL_WALL].a);
-                SDL_RenderFillRect(app->renderer, &rect);
+            if (get_cell(game, x, y) == CELL_WALL) {
+                wall_rects[wall_count].x = x * PIXEL_SCALE;
+                wall_rects[wall_count].y = y * PIXEL_SCALE;
+                wall_rects[wall_count].w = wall_rects[wall_count].h = PIXEL_SCALE;
+                wall_count++;
             }
         }
     }
+    
+    /* Batch render all wall rectangles at once */
+    if (wall_count > 0) {
+        SDL_SetRenderDrawColor(app->renderer,
+                               CELL_COLORS[CELL_WALL].r,
+                               CELL_COLORS[CELL_WALL].g,
+                               CELL_COLORS[CELL_WALL].b,
+                               CELL_COLORS[CELL_WALL].a);
+        SDL_RenderFillRects(app->renderer, wall_rects, wall_count);
+    }
+    
+    /* Free temporary rectangles */
+    SDL_free(wall_rects);
     
     /* Draw grid lines */
     SDL_SetRenderDrawColor(app->renderer,
@@ -75,15 +93,39 @@ void create_background_texture(AppState* app) {
                            GRID_LINE_COLOR.b,
                            GRID_LINE_COLOR.a);
     
-    /* Vertical lines */
-    for (int i = 0; i <= GRID_WIDTH; i++) {
-        SDL_RenderLine(app->renderer, i * PIXEL_SCALE, 0, i * PIXEL_SCALE, WINDOW_HEIGHT);
+    /* Batch the grid lines for more efficient rendering */
+    SDL_FRect* grid_lines = (SDL_FRect*)SDL_malloc((GRID_WIDTH + GRID_HEIGHT + 2) * sizeof(SDL_FRect));
+    if (!grid_lines) {
+        SDL_Log("Failed to allocate rectangles for grid line rendering");
+        SDL_SetRenderTarget(app->renderer, NULL);
+        return;
     }
     
-    /* Horizontal lines */
-    for (int i = 0; i <= GRID_HEIGHT; i++) {
-        SDL_RenderLine(app->renderer, 0, i * PIXEL_SCALE, WINDOW_WIDTH, i * PIXEL_SCALE);
+    int line_count = 0;
+    
+    /* Vertical grid lines (thin rectangles) */
+    for (int i = 0; i <= GRID_WIDTH; i++) {
+        grid_lines[line_count].x = i * PIXEL_SCALE;
+        grid_lines[line_count].y = 0;
+        grid_lines[line_count].w = 1;
+        grid_lines[line_count].h = WINDOW_HEIGHT;
+        line_count++;
     }
+    
+    /* Horizontal grid lines (thin rectangles) */
+    for (int i = 0; i <= GRID_HEIGHT; i++) {
+        grid_lines[line_count].x = 0;
+        grid_lines[line_count].y = i * PIXEL_SCALE;
+        grid_lines[line_count].w = WINDOW_WIDTH;
+        grid_lines[line_count].h = 1;
+        line_count++;
+    }
+    
+    /* Batch render all grid lines at once */
+    SDL_RenderFillRects(app->renderer, grid_lines, line_count);
+    
+    /* Free temporary grid lines */
+    SDL_free(grid_lines);
     
     /* Reset render target */
     SDL_SetRenderTarget(app->renderer, NULL);
@@ -108,6 +150,19 @@ void destroy_textures(AppState* app) {
 }
 
 /*
+ * Add a region to the dirty regions list
+ */
+void add_dirty_region(AppState* app, float x, float y, float w, float h) {
+    if (app->dirty_region_count < MAX_DIRTY_REGIONS) {
+        app->dirty_regions[app->dirty_region_count].x = x;
+        app->dirty_regions[app->dirty_region_count].y = y;
+        app->dirty_regions[app->dirty_region_count].w = w;
+        app->dirty_regions[app->dirty_region_count].h = h;
+        app->dirty_region_count++;
+    }
+}
+
+/*
  * Rendering Functions
  */
 
@@ -119,7 +174,20 @@ void configure_rendering(AppState* app) {
     /* For Metal renderer, set additional hints */
     const char* renderer_name = SDL_GetRendererName(app->renderer);
     if (renderer_name && SDL_strstr(renderer_name, "metal")) {
+        /* Prefer integrated GPU on laptops for power efficiency */
         SDL_SetHint("SDL_METAL_PREFER_LOW_POWER_DEVICE", "1");
+        
+        /* Set maximum FPS based on power mode */
+        if (app->is_on_battery) {
+            /* On battery, be more aggressive with power saving */
+            SDL_SetHint("SDL_METAL_MAX_COMMAND_BUFFERS_PER_FRAME", "1");
+        } else {
+            /* When plugged in, allow more command buffers */
+            SDL_SetHint("SDL_METAL_MAX_COMMAND_BUFFERS_PER_FRAME", "3");
+        }
+        
+        /* Reduce CPU usage by limiting render target changes */
+        SDL_SetHint("SDL_METAL_MINIMIZE_TARGET_CHANGES", "1");
     }
     
     /* Set logical scaling */
@@ -128,7 +196,7 @@ void configure_rendering(AppState* app) {
                                      SDL_LOGICAL_PRESENTATION_LETTERBOX);
 }
 
-/* Calculate and display FPS */
+/* Calculate and display FPS - only update once per second */
 void update_fps(AppState* app) {
     app->fps_count++;
     
@@ -136,20 +204,29 @@ void update_fps(AppState* app) {
     if (current_time - app->last_fps_time >= 1000) {
         app->current_fps = app->fps_count;
         app->fps_count = 0;
-        app->last_fps_time = (Uint32)current_time; /* Explicit cast */
+        app->last_fps_time = current_time;
         
-        char title[64];
-        snprintf(title, sizeof(title), "Bit-Twiddled Game Engine - FPS: %d %s",
+        char title[128];
+        snprintf(title, sizeof(title), "Bit-Twiddled Game Engine - FPS: %d %s Mode: %s",
                  app->current_fps,
-                 app->is_paused ? "[PAUSED]" : "");
+                 app->is_paused ? "[PAUSED]" : "",
+                 app->power_mode == 0 ? "Performance" :
+                 (app->power_mode == 1 ? "Balanced" : "Efficient"));
         SDL_SetWindowTitle(app->window, title);
     }
 }
 
-/* Simplified render function with minimal draw calls */
+/* Optimized render function with batch rendering and dirty rect tracking */
 void render_game(AppState* app) {
     GameState* game = &app->game;
     SDL_Renderer* renderer = app->renderer;
+    
+    /* On first render or after changes, regenerate background texture */
+    static bool first_render = true;
+    if (first_render || game->grid_state.cells_changed) {
+        create_background_texture(app);
+        first_render = false;
+    }
     
     /* Clear the screen */
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -160,44 +237,77 @@ void render_game(AppState* app) {
         SDL_RenderTexture(renderer, app->background_texture, NULL, NULL);
     }
     
-    /* 2. Render items - optimize to batch draw items */
-    SDL_FRect rect = { 0, 0, PIXEL_SCALE, PIXEL_SCALE };
-    SDL_SetRenderDrawColor(renderer,
-                           CELL_COLORS[CELL_ITEM].r,
-                           CELL_COLORS[CELL_ITEM].g,
-                           CELL_COLORS[CELL_ITEM].b,
-                           CELL_COLORS[CELL_ITEM].a);
+    /* 2. Render items in a single batch */
+    SDL_FRect* rects = NULL;
+    int rect_count = 0;
+    const int max_rects = GRID_SIZE; /* Maximum possible items */
     
+    /* Allocate rectangle array once */
+    rects = (SDL_FRect*)SDL_malloc(max_rects * sizeof(SDL_FRect));
+    if (!rects) {
+        SDL_Log("Failed to allocate rectangles for batch rendering");
+        return;
+    }
+    
+    /* Collect all item rectangles for batch rendering */
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
             if (get_cell(game, x, y) == CELL_ITEM) {
-                /* Create smaller rectangle for item */
-                rect.x = x * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
-                rect.y = y * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
-                rect.w = rect.h = PIXEL_SCALE * 0.5f;
-                
-                SDL_RenderFillRect(renderer, &rect);
-                
-                /* Reset rectangle size */
-                rect.w = rect.h = PIXEL_SCALE;
+                rects[rect_count].x = x * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
+                rects[rect_count].y = y * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
+                rects[rect_count].w = rects[rect_count].h = PIXEL_SCALE * 0.5f;
+                rect_count++;
             }
         }
     }
+    
+    /* Batch render all item rectangles at once */
+    if (rect_count > 0) {
+        SDL_SetRenderDrawColor(renderer,
+                               CELL_COLORS[CELL_ITEM].r,
+                               CELL_COLORS[CELL_ITEM].g,
+                               CELL_COLORS[CELL_ITEM].b,
+                               CELL_COLORS[CELL_ITEM].a);
+        SDL_RenderFillRects(renderer, rects, rect_count);
+    }
+    
+    /* Free temporary rectangles */
+    SDL_free(rects);
     
     /* 3. Render player */
     float visual_x, visual_y;
     get_visual_position(&game->player, &visual_x, &visual_y);
     
-    rect.x = visual_x * PIXEL_SCALE;
-    rect.y = visual_y * PIXEL_SCALE;
-    rect.w = rect.h = PIXEL_SCALE;
+    SDL_FRect player_rect = {
+        visual_x * PIXEL_SCALE,
+        visual_y * PIXEL_SCALE,
+        PIXEL_SCALE,
+        PIXEL_SCALE
+    };
+    
+    /* Track dirty regions for player movement */
+    if (game->player.is_moving) {
+        /* Add player's previous position to dirty regions */
+        add_dirty_region(app,
+                         game->player.pos_x * PIXEL_SCALE - PIXEL_SCALE,
+                         game->player.pos_y * PIXEL_SCALE - PIXEL_SCALE,
+                         PIXEL_SCALE * 3,
+                         PIXEL_SCALE * 3);
+        
+        /* Add player's new position to dirty regions */
+        add_dirty_region(app,
+                         visual_x * PIXEL_SCALE - PIXEL_SCALE,
+                         visual_y * PIXEL_SCALE - PIXEL_SCALE,
+                         PIXEL_SCALE * 3,
+                         PIXEL_SCALE * 3);
+    }
     
     SDL_SetRenderDrawColor(renderer,
                            PLAYER_COLOR.r,
                            PLAYER_COLOR.g,
                            PLAYER_COLOR.b,
                            PLAYER_COLOR.a);
-    SDL_RenderFillRect(renderer, &rect);
+    SDL_RenderFillRect(renderer, &player_rect);
     
     /* 4. If paused, draw a semi-transparent overlay */
     if (app->is_paused && !app->is_in_background) {
@@ -208,18 +318,19 @@ void render_game(AppState* app) {
                                PAUSED_OVERLAY_COLOR.a);
         SDL_FRect overlay = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
         SDL_RenderFillRect(renderer, &overlay);
-        
-        /* Draw "PAUSED" text (if we had text rendering capability) */
     }
     
     /* Present the rendered frame */
     SDL_RenderPresent(renderer);
     
-    /* Update FPS counter */
-    update_fps(app);
+    /* Reset dirty region count */
+    app->dirty_region_count = 0;
     
-    /* Check if we need to update background texture due to grid changes */
-    if (game->grid_state.cells_changed) {
-        create_background_texture(app);
+    /* Update FPS counter (only visible in window title, so update less frequently) */
+    static Uint64 last_fps_update_time = 0;
+    Uint64 current_time = SDL_GetTicks();
+    if (current_time - last_fps_update_time > 1000) {
+        update_fps(app);
+        last_fps_update_time = current_time;
     }
 }

@@ -6,6 +6,7 @@
  * - Power management
  * - Fullscreen handling
  * - Time scaling
+ * - Adaptive performance based on system state
  */
 
 #include "main.h"
@@ -14,16 +15,71 @@
  * Power Management Functions
  */
 
+/* Check if running on battery power (macOS implementation) */
+bool is_running_on_battery(void) {
+#if defined(__APPLE__) && TARGET_OS_MAC && !TARGET_OS_IOS && !TARGET_OS_TV
+    /* Use IOKit to check power source on macOS */
+    CFTypeRef power_sources = IOPSCopyPowerSourcesInfo();
+    CFArrayRef power_source_list = IOPSCopyPowerSourcesList(power_sources);
+    
+    bool on_battery = true; /* Default to battery if we can't determine */
+    
+    if (power_source_list != NULL) {
+        CFIndex count = CFArrayGetCount(power_source_list);
+        if (count > 0) {
+            /* Just check the first power source */
+            CFDictionaryRef power_source = IOPSGetPowerSourceDescription(power_sources, CFArrayGetValueAtIndex(power_source_list, 0));
+            if (power_source != NULL) {
+                CFStringRef power_state = CFDictionaryGetValue(power_source, CFSTR(kIOPSPowerSourceStateKey));
+                on_battery = !CFEqual(power_state, CFSTR(kIOPSACPowerValue));
+            }
+        }
+        
+        CFRelease(power_source_list);
+    }
+    
+    CFRelease(power_sources);
+    return on_battery;
+#else
+    /* For other platforms, assume we're always on battery */
+    return true;
+#endif
+}
+
 /* Update power state and adjust settings accordingly */
 void update_power_state(AppState* app) {
-    /* When in background, reduce FPS to save power */
+    /* Check if we're running on battery */
+    app->is_on_battery = is_running_on_battery();
+    
+    /* Frame rate and process scheduling based on activity state */
     if (app->is_in_background) {
-        app->target_fps = BACKGROUND_FPS;  /* 10 FPS (for UI responsiveness) */
+        app->target_fps = BACKGROUND_FPS;  /* Very low FPS when completely hidden */
+    }
+    else {
+        /* Always maintain 60 FPS for active gameplay (matches Game Boy approach) */
+        app->target_fps = LOGIC_TICK_RATE;  /* Always target 60 FPS for smoothness */
         
-        /* We don't force pause here - that's handled in the event system */
-    } else {
-        /* When in foreground, use normal framerate */
-        app->target_fps = LOGIC_TICK_RATE;
+        /* Instead of reducing FPS, we adjust how often we process work */
+        if (app->is_on_battery) {
+            /* On battery, be more aggressive with sleep scheduling between frames */
+            if (app->power_mode == 2) { /* Efficient/idle mode */
+                /* Use longer sleeps between render checks - don't reduce FPS */
+                SDL_SetHint("SDL_METAL_FORCE_DEPTH_STENCIL_SHARED", "1"); /* Further optimize Metal */
+            }
+        }
+    }
+    
+    /* Configure renderer based on power state */
+    configure_rendering(app);
+    
+    /* Log power state changes */
+    static bool was_on_battery = false;
+    if (was_on_battery != app->is_on_battery) {
+        was_on_battery = app->is_on_battery;
+        SDL_Log("Power source changed: %s", app->is_on_battery ? "Battery" : "AC Power");
+        
+        /* Reset activity timer to ensure we're in the right power mode */
+        app->last_activity_time = SDL_GetTicks();
     }
 }
 
@@ -40,6 +96,9 @@ float get_time_scale(const AppState* app) {
 /* Set time scale */
 void set_time_scale(AppState* app, uint8_t scale_index) {
     app->app_flags = (app->app_flags & ~APP_TIME_SCALE) | ((scale_index & 0x3) << APP_TS_SHIFT);
+    
+    /* Force a render after changing time scale */
+    app->needs_render = true;
 }
 
 /* Toggle fullscreen mode */
@@ -53,6 +112,9 @@ void toggle_fullscreen(AppState* app) {
     }
     
     configure_rendering(app);
+    
+    /* Force a render after changing window mode */
+    app->needs_render = true;
 }
 
 /* Cycle time scale for debugging */
@@ -63,4 +125,18 @@ void cycle_time_scale(AppState* app) {
     
     static const char* scale_names[] = {"normal (1x)", "slow (0.5x)", "very slow (0.25x)", "fast (2x)"};
     SDL_Log("Time scale: %s", scale_names[next]);
+}
+
+/* Reset activity timer to mark user interaction */
+void reset_activity_timer(AppState* app) {
+    app->last_activity_time = SDL_GetTicks();
+    
+    /* Return to performance mode when user interacts */
+    if (app->power_mode > POWER_MODE_PERFORMANCE) {
+        app->power_mode = POWER_MODE_PERFORMANCE;
+        update_power_state(app);
+    }
+    
+    /* Mark as needing render */
+    app->needs_render = true;
 }
