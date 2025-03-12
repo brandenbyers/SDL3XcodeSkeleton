@@ -1,23 +1,17 @@
 # SDL3 Xcode Skeleton
 
-Multiplatform SDL3 game skeleton in Xcode with Swift Testing for C through bridging headers.
-
-# Example Code
-
-A high-performance 2D grid-based game engine for macOS, iOS, and tvOS. This engine leverages modern hardware capabilities while incorporating classic game optimization techniques for maximum efficiency. Built on SDL3 with Metal rendering support.
+Multiplatform SDL3 2D grid-based game skeleton in Xcode with Swift Testing for C through bridging headers. This system leverages modern hardware capabilities while incorporating classic game optimization techniques for maximum efficiency. Built on SDL3 with Metal rendering support.
 
 ## Project Overview
 
-The Bit-Twiddled Game Engine is a lightweight, efficient game engine designed for grid-based games. It features:
+Designed for grid-based games. It features:
 
 - 64×32 grid with efficient power-of-two dimensions
 - Smooth, consistent animation between tiles
 - Correct screen wrapping calculations
-- Energy-aware operation on Apple platforms
+- Lower FPS when backgrounded
 - Cache-friendly memory access patterns
 - Minimal CPU and battery usage
-
-This project is optimized for modern Apple hardware while embracing classic game optimization techniques that have stood the test of time.
 
 ## Project Structure
 
@@ -45,14 +39,7 @@ The project is organized into five source files with a single shared header:
 
 ### Single Header Approach
 
-The project uses a single header file that's included by all implementation files. This approach:
-
-- Ensures consistency across all files
-- Simplifies dependencies
-- Makes maintenance easier
-- Improves navigation and understanding
-
-For a project of this size, a single header provides the right balance between organization and simplicity.
+The project uses a single header file that's included by all implementation files.
 
 ### Power-of-Two Grid Dimensions
 
@@ -99,14 +86,12 @@ This ensures consistent, predictable game behavior regardless of frame rate.
 
 ### Energy-Aware Operation
 
-The engine adjusts operation based on power state:
+The engine adjusts operation based on window state:
 
 ```c
 /* Determine target FPS based on power state */
 if (app->is_in_background) {
     app->target_fps = BACKGROUND_FPS;  /* 10 FPS */
-} else if (app->is_on_battery || app->is_low_power_mode) {
-    app->target_fps = BATTERY_SAVER_FPS;  /* 30 FPS */
 } else {
     app->target_fps = LOGIC_TICK_RATE;  /* 60 FPS */
 }
@@ -186,6 +171,8 @@ This ensures maximum GPU efficiency on modern Apple hardware.
 4. In main.c, ensure these lines appear at the top:
    ```c
    #define SDL_MAIN_USE_CALLBACKS 1
+   #include <SDL3/SDL.h>
+   #include <SDL3/SDL_main.h>
    #include "main.h"
    ```
 
@@ -243,11 +230,11 @@ The following enhancements could further improve the engine:
 
 ## Performance Considerations
 
-The engine is designed with performance as a primary consideration:
+The engine is designed with performance as a primary consideration but needs work:
 
-- Current CPU usage: <10% on M1 Mac 
-- Energy impact: Mostly "Low" impact level
-- Memory usage: ~32MB
+- Current CPU usage: <20% on M1 Mac 
+- Energy impact: "High" impact level
+- Memory usage: ~40MB
 
 Performance spikes may occur with continuous input, but optimization techniques mitigate this issue.
 

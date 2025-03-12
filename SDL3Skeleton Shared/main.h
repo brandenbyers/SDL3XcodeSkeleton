@@ -47,7 +47,6 @@
 #define CORNER_BUFFER_FRAMES 2      /* Frames before tile end to accept corner input */
 
 /* Energy management */
-#define BATTERY_SAVER_FPS   30      /* Lower frame rate when on battery */
 #define BACKGROUND_FPS      10      /* Very low frame rate when in background */
 
 /* Bit Flags for app state */
@@ -137,7 +136,6 @@ typedef struct {
     /* Power management */
     bool is_on_battery;            /* True if running on battery */
     bool is_in_background;         /* True if app is in background */
-    bool is_low_power_mode;        /* True if in low power mode */
     int target_fps;                /* Target FPS based on power state */
     
     /* Performance tracking */
@@ -196,7 +194,6 @@ void update_fps(AppState* app);
 
 /* Platform-specific functions (platform.c) */
 bool is_running_on_battery(void);
-bool is_in_low_power_mode(void);
 void update_power_state(AppState* app);
 float get_time_scale(const AppState* app);
 void set_time_scale(AppState* app, uint8_t scale_index);
