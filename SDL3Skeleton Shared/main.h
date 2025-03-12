@@ -137,7 +137,11 @@ typedef struct {
     bool is_on_battery;            /* True if running on battery */
     bool is_in_background;         /* True if app is in background */
     bool is_paused;                /* True if game is paused (zero processing) */
+    bool was_auto_paused;          /* True if game was auto-paused by system */
     int target_fps;                /* Target FPS based on power state */
+    
+    /* Rendering timing */
+    Uint64 last_render_time;       /* Last time we rendered a frame */
     
     /* Performance tracking */
     uint64_t last_fps_time;        /* Last time FPS was calculated */
@@ -201,5 +205,7 @@ float get_time_scale(const AppState* app);
 void set_time_scale(AppState* app, uint8_t scale_index);
 void toggle_fullscreen(AppState* app);
 void cycle_time_scale(AppState* app);
+
+/* Note: process_event is declared as static inside main.c */
 
 #endif /* GAME_H */

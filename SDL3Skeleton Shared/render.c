@@ -18,7 +18,7 @@ const SDL_Color CELL_COLORS[CELL_MAX] = {
 };
 const SDL_Color PLAYER_COLOR = { 0, 255, 0, 255 };  /* Player: green */
 const SDL_Color GRID_LINE_COLOR = { 32, 32, 32, 255 }; /* Grid lines: dark gray */
-const SDL_Color PAUSED_OVERLAY_COLOR = { 128, 128, 128, 128 }; /* Semi-transparent gray */
+const SDL_Color PAUSED_OVERLAY_COLOR = { 128, 128, 128, 192 }; /* Semi-transparent gray */
 
 /*
  * Texture Creation Functions
@@ -111,11 +111,18 @@ void destroy_textures(AppState* app) {
  * Rendering Functions
  */
 
-/* Configure renderer for proper scaling */
+/* Configure renderer for proper scaling and VSync */
 void configure_rendering(AppState* app) {
-    /* Configure VSync through hints instead of explicit function calls in SDL3 */
+    /* Configure VSync through hints */
     SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
     
+    /* For Metal renderer, set additional hints */
+    const char* renderer_name = SDL_GetRendererName(app->renderer);
+    if (renderer_name && SDL_strstr(renderer_name, "metal")) {
+        SDL_SetHint("SDL_METAL_PREFER_LOW_POWER_DEVICE", "1");
+    }
+    
+    /* Set logical scaling */
     SDL_SetRenderScale(app->renderer, 1.0f, 1.0f);
     SDL_SetRenderLogicalPresentation(app->renderer, WINDOW_WIDTH, WINDOW_HEIGHT,
                                      SDL_LOGICAL_PRESENTATION_LETTERBOX);
@@ -153,7 +160,7 @@ void render_game(AppState* app) {
         SDL_RenderTexture(renderer, app->background_texture, NULL, NULL);
     }
     
-    /* 2. Render items */
+    /* 2. Render items - optimize to batch draw items */
     SDL_FRect rect = { 0, 0, PIXEL_SCALE, PIXEL_SCALE };
     SDL_SetRenderDrawColor(renderer,
                            CELL_COLORS[CELL_ITEM].r,
@@ -202,7 +209,7 @@ void render_game(AppState* app) {
         SDL_FRect overlay = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
         SDL_RenderFillRect(renderer, &overlay);
         
-        /* TODO: Add "PAUSED" text here if you have text rendering capabilities */
+        /* Draw "PAUSED" text (if we had text rendering capability) */
     }
     
     /* Present the rendered frame */
