@@ -5,11 +5,19 @@
  * - Texture management
  * - Scene drawing with dirty rectangle tracking
  * - Batch rendering for improved performance
- * - Optimized rendering configuration
- * - Viewport rendering
+ * - GPU-based visual interpolation for smooth movement
  */
 
-#include "main.h"
+#include <SDL3/SDL.h>
+#include <stdlib.h>
+#include <math.h>
+
+#include "game.h"
+#include "render.h"
+#include "entity.h"
+#include "viewport.h"
+#include "physics.h"
+#include "collision.h"
 
 /* Power state colors */
 const SDL_Color CELL_COLORS[CELL_MAX] = {
@@ -50,7 +58,7 @@ void create_background_texture(AppState* app) {
     SDL_SetRenderDrawColor(app->renderer, 0, 0, 0, 255);
     SDL_RenderClear(app->renderer);
     
-    /* Batch render walls */
+    /* Batch render walls and pivot points */
     SDL_FRect* wall_rects = NULL;
     int wall_count = 0;
     const int max_walls = GRID_SIZE; /* Maximum possible walls */
@@ -63,30 +71,36 @@ void create_background_texture(AppState* app) {
         return;
     }
     
-    /* Collect all wall rectangles for batch rendering - using cached values for efficiency */
+    /* Collect all wall and pivot rectangles for batch rendering */
     for (int vy = 0; vy < VIEWPORT_HEIGHT; vy++) {
         for (int vx = 0; vx < VIEWPORT_WIDTH; vx++) {
-            /* Get cell directly from viewport cache - much better cache locality */
+            /* Get cell directly from viewport cache - better cache locality */
             int cache_idx = vy * VIEWPORT_WIDTH + vx;
-            CellType cell_type = (CellType)game->viewport.cache[cache_idx];
+            CellType cell_type = (CellType)game->viewport->cache[cache_idx];
             
-            if (cell_type == CELL_WALL) {
+            if (cell_type == CELL_WALL || cell_type == CELL_PIVOT) {
                 wall_rects[wall_count].x = vx * PIXEL_SCALE;
                 wall_rects[wall_count].y = vy * PIXEL_SCALE;
                 wall_rects[wall_count].w = wall_rects[wall_count].h = PIXEL_SCALE;
+                
+                /* Use appropriate color based on cell type */
+                if (cell_type == CELL_WALL) {
+                    SDL_SetRenderDrawColor(app->renderer,
+                                           CELL_COLORS[CELL_WALL].r,
+                                           CELL_COLORS[CELL_WALL].g,
+                                           CELL_COLORS[CELL_WALL].b,
+                                           CELL_COLORS[CELL_WALL].a);
+                } else {
+                    SDL_SetRenderDrawColor(app->renderer,
+                                           CELL_COLORS[CELL_PIVOT].r,
+                                           CELL_COLORS[CELL_PIVOT].g,
+                                           CELL_COLORS[CELL_PIVOT].b,
+                                           CELL_COLORS[CELL_PIVOT].a);
+                }
+                SDL_RenderFillRect(app->renderer, &wall_rects[wall_count]);
                 wall_count++;
             }
         }
-    }
-    
-    /* Batch render all wall rectangles at once */
-    if (wall_count > 0) {
-        SDL_SetRenderDrawColor(app->renderer,
-                               CELL_COLORS[CELL_WALL].r,
-                               CELL_COLORS[CELL_WALL].g,
-                               CELL_COLORS[CELL_WALL].b,
-                               CELL_COLORS[CELL_WALL].a);
-        SDL_RenderFillRects(app->renderer, wall_rects, wall_count);
     }
     
     /* Free temporary rectangles */
@@ -137,8 +151,8 @@ void create_background_texture(AppState* app) {
     SDL_SetRenderTarget(app->renderer, NULL);
     
     /* Mark grid as updated */
-    game->grid_state.cells_changed = false;
-    game->grid_state.last_frame_updated = game->frame_count;
+    game->grid_state->cells_changed = false;
+    game->grid_state->last_frame_updated = game->frame_count;
 }
 
 /* Create all textures */
@@ -174,42 +188,16 @@ void add_dirty_region(AppState* app, float x, float y, float w, float h) {
 
 /* Configure renderer with platform-specific optimizations */
 void configure_rendering(AppState* app) {
-    const char* renderer_name = SDL_GetRendererName(app->renderer);
-    
-    if (app->power_mode == POWER_MODE_EFFICIENT) {
-        /* When in efficient mode, aggressively reduce rendering overhead */
-        SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");                     /* Disable VSync */
-        SDL_SetHint("SDL_RENDER_BATCHING", "1");                     /* Enable batching */
-        SDL_SetHint("SDL_RENDER_LINE_METHOD", "3");                  /* Fastest line method */
-        
-        if (renderer_name && SDL_strstr(renderer_name, "metal")) {
-            /* Metal-specific extreme power saving */
-            SDL_SetHint("SDL_METAL_FORCE_LOW_POWER_DEVICE", "1");    /* Force low power device */
-            SDL_SetHint("SDL_METAL_PREFER_LOW_POWER_DEVICE", "1");   /* Prefer integrated GPU */
-            SDL_SetHint("SDL_METAL_FORCE_DEPTH_STENCIL_SHARED", "1");/* Additional optimization */
-            SDL_SetHint("SDL_METAL_MINIMIZE_TARGET_CHANGES", "1");   /* Reduce target changes */
-            SDL_SetHint("SDL_METAL_MAX_COMMAND_BUFFERS_PER_FRAME", "1"); /* Single command buffer */
-            SDL_SetHint("SDL_METAL_NEAREST_FILTERING", "1");         /* Use nearest filtering */
-        }
-    } else {
-        /* Performance or balanced mode - optimize for smooth gameplay */
-        SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");                     /* Enable VSync */
-        SDL_SetHint("SDL_RENDER_BATCHING", "1");                     /* Enable batching */
-        
-        if (renderer_name && SDL_strstr(renderer_name, "metal")) {
-            /* Metal-specific balanced settings */
-            if (app->is_on_battery) {
-                SDL_SetHint("SDL_METAL_PREFER_LOW_POWER_DEVICE", "1");/* Prefer integrated GPU */
-            } else {
-                SDL_SetHint("SDL_METAL_PREFER_LOW_POWER_DEVICE", "0");/* Allow discrete GPU */
-            }
-        }
-    }
-    
     /* Set logical scaling */
     SDL_SetRenderScale(app->renderer, 1.0f, 1.0f);
     SDL_SetRenderLogicalPresentation(app->renderer, WINDOW_WIDTH, WINDOW_HEIGHT,
                                      SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    
+    /* Enable VSync for smooth rendering */
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
+    
+    /* Enable batching for more efficient rendering */
+    SDL_SetHint("SDL_RENDER_BATCHING", "1");
 }
 
 /* Calculate and display FPS - only update once per second */
@@ -223,62 +211,33 @@ void update_fps(AppState* app) {
         app->last_fps_time = current_time;
         
         char title[128];
-        snprintf(title, sizeof(title), "Bit-Twiddled Game Engine - FPS: %d %s Mode: %s",
+        snprintf(title, sizeof(title), "Bit-Twiddled Game Engine - FPS: %d %s",
                  app->current_fps,
-                 app->is_paused ? "[PAUSED]" : "",
-                 app->power_mode == 0 ? "Performance" :
-                 (app->power_mode == 1 ? "Balanced" : "Efficient"));
+                 app->is_paused ? "[PAUSED]" : "");
         SDL_SetWindowTitle(app->window, title);
     }
 }
 
-/* Ultra-optimized render function */
+/* Render the game with GPU-based visual interpolation */
 void render_game(AppState* app) {
     GameState* game = &app->game;
     SDL_Renderer* renderer = app->renderer;
-    
-    /* Static optimization - track if content has actually changed */
-    static uint32_t last_render_frame = 0;
-    static bool player_was_moving = false;
-    static bool entity_was_moving = false;
-    
-    /* Check if any entity is moving */
-    bool any_entity_moving = false;
-    for (int i = 0; i < game->entities.count; i++) {
-        if (game->entities.is_active[i] && game->entities.is_moving[i]) {
-            any_entity_moving = true;
-            break;
-        }
-    }
-    
-    /* Skip rendering completely if game state hasn't changed */
-    if (last_render_frame == game->frame_count &&
-        player_was_moving == game->player.is_moving &&
-        entity_was_moving == any_entity_moving &&
-        !app->is_paused) {
-        /* No change at all - skip rendering completely */
-        return;
-    }
-    
-    /* Track state for next time */
-    last_render_frame = game->frame_count;
-    player_was_moving = game->player.is_moving;
-    entity_was_moving = any_entity_moving;
+    uint64_t current_time = SDL_GetTicks(); /* Current time for animations */
     
     /* On first render or after changes, regenerate background texture */
-    if (game->grid_state.cells_changed) {
+    if (game->grid_state->cells_changed) {
         /* Ensure cache is up-to-date before rendering */
-        if (!game->grid_state.cache_valid) {
-            update_viewport_cache(&app->game);
+        if (!game->grid_state->cache_valid) {
+            update_viewport_cache(game);
         }
         create_background_texture(app);
     }
     
-    /* Clear the screen only on context changes or when paused */
+    /* Clear the screen */
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
     
-    /* 1. Render the background (walls and grid lines) */
+    /* 1. Render the background (walls, pivot points, and grid lines) */
     if (app->background_texture) {
         SDL_RenderTexture(renderer, app->background_texture, NULL, NULL);
     }
@@ -288,12 +247,12 @@ void render_game(AppState* app) {
     if (rects) {
         int rect_count = 0;
         
-        /* Collect all item rectangles for batch rendering - using cached values for efficiency */
+        /* Collect all item rectangles for batch rendering */
         for (int vy = 0; vy < VIEWPORT_HEIGHT; vy++) {
             for (int vx = 0; vx < VIEWPORT_WIDTH; vx++) {
-                /* Get cell directly from viewport cache - much better cache locality */
+                /* Get cell from viewport cache */
                 int cache_idx = vy * VIEWPORT_WIDTH + vx;
-                CellType cell_type = (CellType)game->viewport.cache[cache_idx];
+                CellType cell_type = (CellType)game->viewport->cache[cache_idx];
                 
                 if (cell_type == CELL_ITEM) {
                     rects[rect_count].x = vx * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
@@ -317,9 +276,9 @@ void render_game(AppState* app) {
         SDL_free(rects);
     }
     
-    /* 3. Render player as a single rect */
+    /* 3. Render player with GPU-based visual interpolation */
     float visual_x, visual_y;
-    get_visual_position(&game->player, &visual_x, &visual_y);
+    get_visual_position(game->player, &visual_x, &visual_y);
     
     /* Convert the player's grid position to viewport position */
     int viewport_x, viewport_y;
@@ -342,9 +301,9 @@ void render_game(AppState* app) {
     bool is_wrapping_y = false;
     
     /* Check if we're moving across a viewport edge with wrapping */
-    if (game->player.is_moving) {
+    if (game->player->is_moving) {
         int target_viewport_x, target_viewport_y;
-        grid_to_viewport(game, game->player.target_x, game->player.target_y,
+        grid_to_viewport(game, game->player->target_x, game->player->target_y,
                          &target_viewport_x, &target_viewport_y);
         
         /* Check for horizontal wrapping */
@@ -396,15 +355,15 @@ void render_game(AppState* app) {
         }
     }
     
-    /* 3b. Render all entities */
-    for (int i = 0; i < game->entities.count; i++) {
-        if (!game->entities.is_active[i]) {
+    /* 4. Render all entities with GPU-based visual interpolation */
+    for (int i = 0; i < game->entities->count; i++) {
+        if (!game->entities->is_active[i]) {
             continue;
         }
         
-        /* Get entity position */
+        /* Get entity position with GPU-based interpolation */
         float entity_x, entity_y;
-        get_entity_visual_position(game, i, &entity_x, &entity_y);
+        get_entity_visual_position(game, i, current_time, &entity_x, &entity_y);
         
         /* Convert to viewport coordinates */
         int entity_viewport_x, entity_viewport_y;
@@ -426,9 +385,9 @@ void render_game(AppState* app) {
         bool entity_wrapping_x = false;
         bool entity_wrapping_y = false;
         
-        if (game->entities.is_moving[i]) {
+        if (game->entities->is_moving[i]) {
             int target_vx, target_vy;
-            grid_to_viewport(game, game->entities.target_x[i], game->entities.target_y[i],
+            grid_to_viewport(game, game->entities->target_x[i], game->entities->target_y[i],
                              &target_vx, &target_vy);
             
             /* Check for horizontal wrapping */
@@ -443,7 +402,7 @@ void render_game(AppState* app) {
         }
         
         /* Get entity color */
-        uint8_t entity_type = game->entities.entity_type[i];
+        uint8_t entity_type = game->entities->entity_type[i];
         if (entity_type >= ENTITY_MAX) {
             entity_type = 0;
         }
@@ -487,7 +446,7 @@ void render_game(AppState* app) {
         }
     }
     
-    /* 4. If paused, draw a semi-transparent overlay */
+    /* 5. If paused, draw a semi-transparent overlay */
     if (app->is_paused) {
         SDL_SetRenderDrawColor(renderer,
                                PAUSED_OVERLAY_COLOR.r,
@@ -501,22 +460,6 @@ void render_game(AppState* app) {
     /* Present the rendered frame */
     SDL_RenderPresent(renderer);
     
-    /* Update FPS counter only once per second */
-    app->fps_count++;
-    
-    uint64_t current_time = SDL_GetTicks();
-    if (current_time - app->last_fps_time >= 1000) {
-        app->current_fps = app->fps_count;
-        app->fps_count = 0;
-        app->last_fps_time = current_time;
-        
-        /* Update window title with current FPS and mode */
-        char title[128];
-        snprintf(title, sizeof(title), "Bit-Twiddled Game Engine - FPS: %d %s Mode: %s",
-                 app->current_fps,
-                 app->is_paused ? "[PAUSED]" : "",
-                 app->power_mode == 0 ? "Performance" :
-                 (app->power_mode == 1 ? "Balanced" : "Efficient"));
-        SDL_SetWindowTitle(app->window, title);
-    }
+    /* Update FPS counter */
+    update_fps(app);
 }
