@@ -1,7 +1,7 @@
 /*
- * collision.h - Collision system declarations
+ * collision.h - Collision and movement system declarations
  *
- * This header defines the collision detection and response system.
+ * This header defines the collision detection and movement systems.
  * Uses a grid-based approach with bit manipulation for maximum efficiency.
  */
 
@@ -31,11 +31,27 @@
 #define RULE_CLOCKWISE     0x02  /* Prefers to turn clockwise */
 #define RULE_COUNTER_CW    0x04  /* Prefers to turn counter-clockwise */
 
+/* Movement state - 8 bytes */
+typedef struct MovementState {
+    uint8_t pos_x;            /* Current X (0-63) */
+    uint8_t pos_y;            /* Current Y (0-63) */
+    uint8_t target_x;         /* Target X (0-63) */
+    uint8_t target_y;         /* Target Y (0-63) */
+    uint8_t direction;        /* Current direction (0-3, 255 for none) */
+    uint8_t is_moving;        /* Boolean: 1 if moving, 0 if not */
+    uint8_t just_started;     /* Boolean: 1 if just started, 0 if not */
+    uint8_t move_frame;       /* Current frame (0-11) */
+} MovementState;
+
 /* Collision system structure */
 typedef struct CollisionSystem {
     uint8_t map[GRID_SIZE];         /* What's in each cell (bit flags) */
     uint8_t pivot_dirs[GRID_SIZE];  /* Allowed directions at each pivot point */
 } CollisionSystem;
+
+/*
+ * Collision System Functions
+ */
 
 /* Initialize the collision system */
 void init_collision_system(CollisionSystem* collision);
@@ -63,5 +79,27 @@ void set_collision_cell(GameState* game, int x, int y, uint8_t type, bool value)
 
 /* Check for collisions between player and entities */
 bool check_player_entity_collision(const GameState* game);
+
+/*
+ * Movement Functions (Merged from physics.h)
+ */
+
+/* Check if directions are opposite */
+bool are_directions_opposite(Direction dir1, Direction dir2);
+
+/* Start a movement in the specified direction */
+bool start_movement(GameState* game, Direction dir);
+
+/* Calculate visual position based on movement state */
+void get_visual_position(const MovementState* movement, float* visual_x, float* visual_y);
+
+/* Complete the current movement and potentially start next one */
+void complete_movement(GameState* game);
+
+/* Get current direction from movement state */
+Direction get_direction(const MovementState* movement);
+
+/* Set current direction in movement state */
+void set_direction(MovementState* movement, Direction dir);
 
 #endif /* COLLISION_H */

@@ -2,7 +2,7 @@
  * game.c - Core game implementation for the Bit-Twiddled Game Engine
  *
  * This file contains the central game logic that ties together all subsystems.
- * It implements the game initialization, update loop, and level design.
+ * It implements the game initialization, update loop, and core mechanics.
  */
 
 #include <SDL3/SDL.h>
@@ -12,9 +12,9 @@
 #include "game.h"
 #include "entity.h"
 #include "collision.h"
-#include "physics.h"
 #include "viewport.h"
 #include "input.h"
+#include "level.h"
 
 /*
  * Get cell value from grid with direct array access
@@ -74,7 +74,7 @@ void set_cell(GameState* game, int x, int y, CellType type) {
                 game->collision->map[(y << GRID_WIDTH_SHIFT) | x] = cell_flags;
                 break;
             case CELL_PIVOT:
-                /* Pivot points are handled separately */
+                /* Pivot points are handled separately by set_pivot_point function */
                 break;
             default:
                 /* Handle any other cases or CELL_MAX */
@@ -84,12 +84,9 @@ void set_cell(GameState* game, int x, int y, CellType type) {
 }
 
 /*
- * Initialize the game state - this sets up the example level
+ * Initialize the game state
  */
 void init_game(GameState* game) {
-    /* Clear the grid */
-    memset(game->grid, CELL_EMPTY, GRID_SIZE);
-    
     /* Initialize viewport position (centered vertically) */
     game->viewport->offset_x = 0;
     game->viewport->offset_y = VIEWPORT_OFFSET_Y;
@@ -97,117 +94,8 @@ void init_game(GameState* game) {
     /* Initialize cache tracking */
     game->grid_state->cache_valid = false;
     
-    /* Initialize entity system */
-    init_entity_system(game);
-    
-    /* Initialize collision system */
-    init_collision_system(game->collision);
-    
-    /* Build the level walls */
-    
-    /* Outer walls around the viewport */
-    for (int i = 0; i < VIEWPORT_WIDTH; i++) {
-        /* Get actual grid coordinates for viewport positions */
-        int grid_x, grid_y;
-        
-        /* Top wall */
-        viewport_to_grid(game, i, 0, &grid_x, &grid_y);
-        set_cell(game, grid_x, grid_y, CELL_WALL);
-        set_collision_cell(game, grid_x, grid_y, CMAP_WALL, true);
-        
-        /* Bottom wall */
-        viewport_to_grid(game, i, VIEWPORT_HEIGHT - 1, &grid_x, &grid_y);
-        set_cell(game, grid_x, grid_y, CELL_WALL);
-        set_collision_cell(game, grid_x, grid_y, CMAP_WALL, true);
-    }
-    
-    /* Side walls of the viewport */
-    for (int j = 0; j < VIEWPORT_HEIGHT; j++) {
-        /* Get actual grid coordinates for viewport positions */
-        int grid_x, grid_y;
-        
-        /* Left wall */
-        viewport_to_grid(game, 0, j, &grid_x, &grid_y);
-        set_cell(game, grid_x, grid_y, CELL_WALL);
-        set_collision_cell(game, grid_x, grid_y, CMAP_WALL, true);
-        
-        /* Right wall */
-        viewport_to_grid(game, VIEWPORT_WIDTH - 1, j, &grid_x, &grid_y);
-        set_cell(game, grid_x, grid_y, CELL_WALL);
-        set_collision_cell(game, grid_x, grid_y, CMAP_WALL, true);
-    }
-    
-    /* Add pivot points for entity movement */
-    int left_pivot_x, left_pivot_y;
-    int right_pivot_x, right_pivot_y;
-    
-    /* Left side pivot */
-    viewport_to_grid(game, 10, VIEWPORT_HEIGHT/2, &left_pivot_x, &left_pivot_y);
-    set_cell(game, left_pivot_x, left_pivot_y, CELL_PIVOT);
-    
-    /* Set pivot in collision map with directions */
-    set_pivot_point(game, left_pivot_x, left_pivot_y, PIVOT_LEFT | PIVOT_RIGHT);
-    
-    /* Right side pivot */
-    viewport_to_grid(game, VIEWPORT_WIDTH - 11, VIEWPORT_HEIGHT/2, &right_pivot_x, &right_pivot_y);
-    set_cell(game, right_pivot_x, right_pivot_y, CELL_PIVOT);
-    
-    /* Set pivot in collision map with directions */
-    set_pivot_point(game, right_pivot_x, right_pivot_y, PIVOT_LEFT | PIVOT_RIGHT);
-    
-    /* Add a patrol entity that moves between the pivots */
-    add_entity(game, left_pivot_x, left_pivot_y, DIR_RIGHT, ENTITY_PATROL);
-    
-    /* Add some items for collection */
-    for (int i = 0; i < 20; i++) {
-        /* Generate random viewport coordinates (away from walls) */
-        int viewport_x = 5 + (rand() % (VIEWPORT_WIDTH - 10));
-        int viewport_y = 5 + (rand() % (VIEWPORT_HEIGHT - 10));
-        
-        /* Convert to grid coordinates */
-        int grid_x, grid_y;
-        viewport_to_grid(game, viewport_x, viewport_y, &grid_x, &grid_y);
-        
-        /* Only place items in empty spaces */
-        if (get_cell(game, grid_x, grid_y) == CELL_EMPTY &&
-            !is_entity_at_position(game, grid_x, grid_y)) {
-            set_cell(game, grid_x, grid_y, CELL_ITEM);
-            set_collision_cell(game, grid_x, grid_y, CMAP_ITEM, true);
-        }
-    }
-    
-    /* Initialize player in center of bottom half */
-    int player_viewport_x = VIEWPORT_WIDTH / 2;
-    int player_viewport_y = 3 * VIEWPORT_HEIGHT / 4;
-    
-    /* Convert to grid coordinates */
-    int player_grid_x, player_grid_y;
-    viewport_to_grid(game, player_viewport_x, player_viewport_y, &player_grid_x, &player_grid_y);
-    
-    /* Set player position */
-    game->player->pos_x = player_grid_x;
-    game->player->pos_y = player_grid_y;
-    game->player->target_x = player_grid_x;
-    game->player->target_y = player_grid_y;
-    game->player->direction = DIR_NONE;
-    game->player->is_moving = false;
-    game->player->just_started = false;
-    game->player->move_frame = 0;
-    
-    /* Add player to collision map */
-    set_collision_cell(game, player_grid_x, player_grid_y, CMAP_PLAYER, true);
-    
-    /* Reset input state */
-    game->input->key_states = 0;
-    game->input->current_dir = DIR_NONE;
-    game->input->buffered_dir = DIR_NONE;
-    
-    /* Update viewport cache */
-    update_viewport_cache(game);
-    
-    /* Mark grid as updated */
-    game->grid_state->cells_changed = false;
-    game->grid_state->last_frame_updated = game->frame_count;
+    /* Initialize level system - this loads the first level */
+    init_level_system(game);
     
     /* Reset timing */
     game->last_tick_time = SDL_GetTicks();
@@ -224,8 +112,19 @@ void update_game_logic_fixed_step(GameState* game) {
     
     /* Check for restart request */
     if (is_restart_requested(input)) {
-        init_game(game);
+        /* Reload the current level */
+        load_level(game, get_current_level(game));
         set_restart_requested(input, false);
+        return;
+    }
+    
+    /* Process any special actions (like level cycling) */
+    process_actions(game);
+    
+    /* Check if level is completed */
+    if (is_level_completed(game)) {
+        /* Load the next level */
+        next_level(game);
         return;
     }
     

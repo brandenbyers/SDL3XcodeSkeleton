@@ -6,6 +6,10 @@
  */
 
 #include "main.h"
+#include "level.h"  /* Add for level cycling */
+
+/* Action flags for special inputs */
+#define ACTION_NEXT_LEVEL   0x01
 
 /*
  * Input State Functions
@@ -41,6 +45,21 @@ void set_restart_requested(InputState* input, bool requested) {
     input->key_states = (input->key_states & ~RESTART_REQ) | (requested ? RESTART_REQ : 0);
 }
 
+/* Check if an action is requested */
+bool is_action_requested(const InputState* input, uint8_t action) {
+    return (input->actions & action) != 0;
+}
+
+/* Set action requested flag */
+void set_action_requested(InputState* input, uint8_t action, bool requested) {
+    input->actions = (input->actions & ~action) | (requested ? action : 0);
+}
+
+/* Clear all action flags */
+void clear_actions(InputState* input) {
+    input->actions = 0;
+}
+
 /* Process key press/release with throttling for repeats */
 void process_key_event(InputState* input, SDL_Scancode key, bool pressed) {
     Direction dir = DIR_NONE;
@@ -51,9 +70,13 @@ void process_key_event(InputState* input, SDL_Scancode key, bool pressed) {
     (key == SDL_SCANCODE_LEFT)  ? DIR_LEFT :
     (key == SDL_SCANCODE_DOWN)  ? DIR_DOWN : DIR_NONE;
     
-    /* Handle restart key */
+    /* Handle special keys */
     if (key == SDL_SCANCODE_R) {
         set_restart_requested(input, pressed);
+        return;
+    } else if (key == SDL_SCANCODE_N && pressed) {
+        /* Only trigger on key press, not release */
+        set_action_requested(input, ACTION_NEXT_LEVEL, true);
         return;
     }
     
@@ -239,6 +262,20 @@ void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad) {
     if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_START)) {
         set_restart_requested(input, true);
     }
+}
+
+/* Process actions from input state */
+void process_actions(GameState* game) {
+    InputState* input = game->input;
+    
+    /* Next level action */
+    if (is_action_requested(input, ACTION_NEXT_LEVEL)) {
+        next_level(game);
+        set_action_requested(input, ACTION_NEXT_LEVEL, false);
+    }
+    
+    /* Clear all actions after processing */
+    clear_actions(input);
 }
 
 /* Initialize gamepad */

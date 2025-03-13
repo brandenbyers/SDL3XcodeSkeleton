@@ -16,7 +16,6 @@
 #include "render.h"
 #include "entity.h"
 #include "viewport.h"
-#include "physics.h"
 #include "collision.h"
 
 /* Power state colors */
@@ -28,7 +27,63 @@ const SDL_Color CELL_COLORS[CELL_MAX] = {
 };
 const SDL_Color PLAYER_COLOR = { 0, 255, 0, 255 };  /* Player: green */
 const SDL_Color GRID_LINE_COLOR = { 32, 32, 32, 255 }; /* Grid lines: dark gray */
-const SDL_Color PAUSED_OVERLAY_COLOR = { 128, 128, 128, 192 }; /* Semi-transparent gray */
+const SDL_Color PAUSED_OVERLAY_COLOR = { 0, 0, 32, 128 }; /* Transparent dark blue */
+
+/* Simple bitmap font for the "PAUSED" text using blocks (each character is 5×7 pixels) */
+static const uint8_t BITMAP_FONT[26][7] = {
+    /* A */
+    { 0x6, 0x9, 0x9, 0xF, 0x9, 0x9, 0x9 },
+    /* B */
+    { 0xE, 0x9, 0x9, 0xE, 0x9, 0x9, 0xE },
+    /* C */
+    { 0x6, 0x9, 0x8, 0x8, 0x8, 0x9, 0x6 },
+    /* D */
+    { 0xE, 0x9, 0x9, 0x9, 0x9, 0x9, 0xE },
+    /* E */
+    { 0xF, 0x8, 0x8, 0xE, 0x8, 0x8, 0xF },
+    /* F */
+    { 0xF, 0x8, 0x8, 0xE, 0x8, 0x8, 0x8 },
+    /* G */
+    { 0x6, 0x9, 0x8, 0xB, 0x9, 0x9, 0x6 },
+    /* H */
+    { 0x9, 0x9, 0x9, 0xF, 0x9, 0x9, 0x9 },
+    /* I */
+    { 0xE, 0x4, 0x4, 0x4, 0x4, 0x4, 0xE },
+    /* J */
+    { 0x1, 0x1, 0x1, 0x1, 0x9, 0x9, 0x6 },
+    /* K */
+    { 0x9, 0x9, 0xA, 0xC, 0xA, 0x9, 0x9 },
+    /* L */
+    { 0x8, 0x8, 0x8, 0x8, 0x8, 0x8, 0xF },
+    /* M */
+    { 0x9, 0xF, 0x9, 0x9, 0x9, 0x9, 0x9 },
+    /* N */
+    { 0x9, 0xD, 0xF, 0xB, 0x9, 0x9, 0x9 },
+    /* O */
+    { 0x6, 0x9, 0x9, 0x9, 0x9, 0x9, 0x6 },
+    /* P */
+    { 0xE, 0x9, 0x9, 0xE, 0x8, 0x8, 0x8 },
+    /* Q */
+    { 0x6, 0x9, 0x9, 0x9, 0xB, 0xA, 0x5 },
+    /* R */
+    { 0xE, 0x9, 0x9, 0xE, 0xA, 0x9, 0x9 },
+    /* S */
+    { 0x6, 0x9, 0x8, 0x6, 0x1, 0x9, 0x6 },
+    /* T */
+    { 0xE, 0x4, 0x4, 0x4, 0x4, 0x4, 0x4 },
+    /* U */
+    { 0x9, 0x9, 0x9, 0x9, 0x9, 0x9, 0x6 },
+    /* V */
+    { 0x9, 0x9, 0x9, 0x9, 0x9, 0x6, 0x6 },
+    /* W */
+    { 0x9, 0x9, 0x9, 0x9, 0x9, 0xF, 0x9 },
+    /* X */
+    { 0x9, 0x9, 0x6, 0x6, 0x6, 0x9, 0x9 },
+    /* Y */
+    { 0x9, 0x9, 0x9, 0x6, 0x2, 0x2, 0x2 },
+    /* Z */
+    { 0xF, 0x1, 0x2, 0x4, 0x8, 0x8, 0xF }
+};
 
 /*
  * Texture Creation Functions
@@ -179,6 +234,50 @@ void add_dirty_region(AppState* app, float x, float y, float w, float h) {
         app->dirty_regions[app->dirty_region_count].w = w;
         app->dirty_regions[app->dirty_region_count].h = h;
         app->dirty_region_count++;
+    }
+}
+
+/*
+ * Render a character from our bitmap font
+ */
+void render_bitmap_char(SDL_Renderer* renderer, char c, int x, int y, int scale, SDL_Color color) {
+    if (c < 'A' || c > 'Z') {
+        return; /* Only support uppercase A-Z */
+    }
+    
+    int idx = c - 'A';
+    
+    /* Draw the character pixel by pixel */
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    
+    for (int row = 0; row < 7; row++) {
+        for (int col = 0; col < 5; col++) {
+            /* Check if this pixel is on */
+            if (BITMAP_FONT[idx][row] & (1 << (4 - col))) {
+                SDL_FRect pixel = {
+                    x + col * scale,
+                    y + row * scale,
+                    scale,
+                    scale
+                };
+                SDL_RenderFillRect(renderer, &pixel);
+            }
+        }
+    }
+}
+
+/*
+ * Render a bitmap string
+ */
+void render_bitmap_string(SDL_Renderer* renderer, const char* str, int x, int y, int scale, SDL_Color color) {
+    int pos_x = x;
+    
+    for (int i = 0; str[i] != '\0'; i++) {
+        /* Only render if it's an uppercase letter */
+        if (str[i] >= 'A' && str[i] <= 'Z') {
+            render_bitmap_char(renderer, str[i], pos_x, y, scale, color);
+        }
+        pos_x += 6 * scale; /* Character width (5) + spacing (1) */
     }
 }
 
@@ -446,8 +545,9 @@ void render_game(AppState* app) {
         }
     }
     
-    /* 5. If paused, draw a semi-transparent overlay */
+    /* 5. If paused, draw a semi-transparent overlay with PAUSED text */
     if (app->is_paused) {
+        /* Draw a translucent dark blue overlay */
         SDL_SetRenderDrawColor(renderer,
                                PAUSED_OVERLAY_COLOR.r,
                                PAUSED_OVERLAY_COLOR.g,
@@ -455,6 +555,16 @@ void render_game(AppState* app) {
                                PAUSED_OVERLAY_COLOR.a);
         SDL_FRect overlay = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
         SDL_RenderFillRect(renderer, &overlay);
+        
+        /* Calculate position for centered "PAUSED" text */
+        int text_width = 6 * 6 * 3; /* 6 letters × 6 pixel width × 3 scale */
+        int text_height = 7 * 3;    /* 7 pixel height × 3 scale */
+        int text_x = (WINDOW_WIDTH - text_width) / 2;
+        int text_y = (WINDOW_HEIGHT - text_height) / 2;
+        
+        /* Draw "PAUSED" text */
+        SDL_Color text_color = { 255, 255, 255, 255 }; /* White */
+        render_bitmap_string(renderer, "PAUSED", text_x, text_y, 3, text_color);
     }
     
     /* Present the rendered frame */

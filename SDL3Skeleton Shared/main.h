@@ -1,12 +1,12 @@
 /*
- * game.h - Main header file for the Bit-Twiddled Game Engine
+ * main.h - Main header file for the Bit-Twiddled Game Engine
  *
  * This header contains all declarations for the game engine components.
- * Optimized for minimal CPU usage and energy efficiency.
+ * Optimized for minimal CPU usage and energy efficiency with a frame-based approach.
  */
 
-#ifndef GAME_H
-#define GAME_H
+#ifndef MAIN_H
+#define MAIN_H
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_joystick.h>
@@ -14,7 +14,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
-#include <string.h>  /* For memset */
+#include <string.h>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -26,273 +26,20 @@
 #endif
 #endif
 
-/*
- * Grid and Viewport Configuration With Power-of-Two Dimensions
- */
-#define GRID_WIDTH          64      /* Must be power of 2 for bit shifts */
-#define GRID_HEIGHT         64      /* Must be power of 2 for bit shifts */
-#define GRID_WIDTH_SHIFT    6       /* log2(64) = 6, used for shifting */
-#define GRID_HEIGHT_SHIFT   6       /* log2(64) = 6, used for shifting */
-#define GRID_HEIGHT_MASK    0x3F    /* 2^6 - 1 = 63, masks lower 6 bits */
-#define GRID_WIDTH_MASK     0x3F    /* 2^6 - 1 = 63, masks lower 6 bits */
-#define GRID_SIZE           (GRID_WIDTH * GRID_HEIGHT)
+/* Include all component headers */
+#include "game.h"      /* Core game state definitions */
+#include "collision.h" /* Collision detection and movement system */
+#include "entity.h"    /* Entity behavior and management */
+#include "level.h"     /* Level loading and management */
+#include "render.h"    /* Rendering system */
+#include "viewport.h"  /* Viewport transformations */
+#include "input.h"     /* Input handling */
 
-/* Viewport configuration for 16:9 aspect ratio */
-#define VIEWPORT_WIDTH      64      /* Same as grid width */
-#define VIEWPORT_HEIGHT     36      /* 16:9 aspect ratio */
-#define VIEWPORT_OFFSET_Y   14      /* (64-36)/2 = 14, centers the viewport vertically */
-
-/* Display configuration */
-#define PIXEL_SCALE         12      /* Screen pixels per grid cell */
-#define WINDOW_WIDTH        (VIEWPORT_WIDTH * PIXEL_SCALE)   /* Show full viewport width */
-#define WINDOW_HEIGHT       (VIEWPORT_HEIGHT * PIXEL_SCALE)  /* Show full viewport height */
-
-/* Game timing configuration */
-#define LOGIC_TICK_RATE     60      /* Game logic updates per second */
-#define FRAMES_PER_TILE     3       /* Frames to move one tile */
-#define LOGIC_TICK_MS       (1000 / LOGIC_TICK_RATE)
-#define CORNER_BUFFER_FRAMES 2      /* Frames before tile end to accept corner input */
-
-/* Energy management */
-#define BACKGROUND_FPS      10      /* Very low frame rate when in background */
-#define MAX_DIRTY_REGIONS   16      /* Maximum number of dirty regions to track */
-
-/* Bit Flags for app state */
-#define APP_FULLSCREEN      0x01
-#define APP_TIME_SCALE      0x06    /* Bits 1-2 for time scale */
-#define APP_TS_SHIFT        1       /* Shift amount for time scale */
-
-/* Input state flags */
-#define KEY_RIGHT           0x01
-#define KEY_UP              0x02
-#define KEY_LEFT            0x04
-#define KEY_DOWN            0x08
-#define HAS_BUFFERED        0x10
-#define RESTART_REQ         0x20
-
-/* Power modes for adaptive performance */
-#define POWER_MODE_PERFORMANCE  0   /* Full speed, optimal responsiveness */
-#define POWER_MODE_BALANCED     1   /* Good balance of performance and efficiency */
-#define POWER_MODE_EFFICIENT    2   /* Maximum energy efficiency */
-
-/*
- * Type Definitions
- */
-
-/* Cell types - One byte per cell for cache efficiency */
-typedef enum {
-    CELL_EMPTY = 0,
-    CELL_WALL  = 1,
-    CELL_ITEM  = 2,
-    CELL_PIVOT = 3,    /* Pivot point that affects entity movement */
-    CELL_MAX   = 4     /* Not used as a cell value, just for array bounds */
-} CellType;
-
-/* Movement direction encoding */
-typedef enum {
-    DIR_NONE  = 0xFF, /* No direction - using 0xFF instead of -1 for unsigned math */
-    DIR_RIGHT = 0,    /* 00 binary */
-    DIR_UP    = 1,    /* 01 binary */
-    DIR_LEFT  = 2,    /* 10 binary */
-    DIR_DOWN  = 3,    /* 11 binary */
-    DIR_COUNT = 4
-} Direction;
-
-/* Input state structure */
-typedef struct {
-    uint8_t key_states;        /* Bit 0-3: direction keys, 4: has_buffered, 5: restart */
-    uint8_t current_dir;       /* Current direction (0-3, 255 for none) */
-    uint8_t buffered_dir;      /* Buffered direction (0-3, 255 for none) */
-} InputState;
-
-/* Movement state - 8 bytes */
-typedef struct {
-    uint8_t pos_x;            /* Current X (0-63) */
-    uint8_t pos_y;            /* Current Y (0-63) */
-    uint8_t target_x;         /* Target X (0-63) */
-    uint8_t target_y;         /* Target Y (0-63) */
-    uint8_t direction;        /* Current direction (0-3, 255 for none) */
-    uint8_t is_moving;        /* Boolean: 1 if moving, 0 if not */
-    uint8_t just_started;     /* Boolean: 1 if just started, 0 if not */
-    uint8_t move_frame;       /* Current frame (0-11) */
-} MovementState;
-
-/* Grid change tracking */
-typedef struct {
-    bool cells_changed;       /* True if any cells changed */
-    uint64_t last_frame_updated; /* Last frame the grid texture was updated */
-    bool cache_valid;         /* True if viewport cache is valid */
-} GridState;
-
-/* Viewport state */
-typedef struct {
-    uint8_t offset_x;         /* X offset of viewport within grid */
-    uint8_t offset_y;         /* Y offset of viewport within grid */
-    uint8_t cache[VIEWPORT_WIDTH * VIEWPORT_HEIGHT]; /* Cache of visible cells for better locality */
-} ViewportState;
-
-/* Pivot point behavior types */
-#define PIVOT_REVERSE      0x01  /* Entity reverses direction */
-#define PIVOT_TURN_RIGHT   0x02  /* Entity turns 90° right */
-#define PIVOT_TURN_LEFT    0x04  /* Entity turns 90° left */
-#define PIVOT_CONDITIONAL  0x08  /* Use entity's internal rules */
-
-/* Entity type definitions */
-typedef enum {
-    ENTITY_PATROL = 0,        /* Simple back-and-forth patrol */
-    ENTITY_CLOCKWISE = 1,     /* Always turns right (clockwise) at intersections */
-    ENTITY_MAX = 2            /* Maximum number of entity types */
-} EntityType;
-
-/* Maximum number of entities */
-#define MAX_ENTITIES 16
-
-/* Entity structure - designed for cache efficiency with SoA pattern */
-typedef struct {
-    uint8_t pos_x[MAX_ENTITIES];          /* Current X positions */
-    uint8_t pos_y[MAX_ENTITIES];          /* Current Y positions */
-    uint8_t target_x[MAX_ENTITIES];       /* Target X positions */
-    uint8_t target_y[MAX_ENTITIES];       /* Target Y positions */
-    uint8_t direction[MAX_ENTITIES];      /* Current directions */
-    uint8_t entity_type[MAX_ENTITIES];    /* Entity behavior types */
-    uint8_t is_active[MAX_ENTITIES];      /* 1 if entity is active, 0 if not */
-    uint8_t is_moving[MAX_ENTITIES];      /* 1 if entity is moving, 0 if not */
-    uint8_t move_frame[MAX_ENTITIES];     /* Current movement frame */
-    uint64_t next_update_time[MAX_ENTITIES]; /* Next time this entity needs update */
-    uint8_t count;                        /* Number of active entities */
-    uint64_t next_event_time;             /* Time of the next entity event */
-    bool needs_update;                    /* True if any entity needs updating */
-} EntitySystem;
-
-/* Pivot point data - one byte per pivot point */
-typedef struct {
-    uint8_t behavior[GRID_SIZE];   /* Behavior bits for each grid cell */
-    bool has_pivot[GRID_SIZE];     /* Quick lookup for pivot existence */
-} PivotSystem;
-
-/* Game State */
-typedef struct {
-    uint8_t grid[GRID_SIZE];       /* Grid: one byte per cell for better cache efficiency */
-    MovementState player;          /* Player movement state */
-    InputState input;              /* Input state */
-    GridState grid_state;          /* Grid change tracking */
-    ViewportState viewport;        /* Viewport position in grid */
-    EntitySystem entities;         /* Entity system */
-    PivotSystem pivots;            /* Pivot point system */
-    uint32_t frame_count;          /* Total frames executed (32-bit counter) */
-    uint16_t accumulated_time;     /* Accumulated time since last tick (ms) */
-    uint64_t last_tick_time;       /* Time of last logic tick */
-} GameState;
-
-/* Application State */
-typedef struct {
-    SDL_Window* window;
-    SDL_Renderer* renderer;
-    SDL_Gamepad* gamepad;
-    SDL_JoystickID gamepad_id;
-    
-    /* Simple texture-based rendering */
-    SDL_Texture* background_texture;  /* Static walls and grid lines */
-    
-    GameState game;
-    uint8_t app_flags;             /* Bit 0: fullscreen, 1-2: time scale */
-    
-    /* Power management */
-    bool is_on_battery;            /* True if running on battery */
-    bool is_in_background;         /* True if app is in background */
-    bool is_paused;                /* True if game is paused (zero processing) */
-    bool was_auto_paused;          /* True if game was auto-paused by system */
-    int target_fps;                /* Target FPS based on power state */
-    
-    /* Rendering timing */
-    uint64_t last_render_time;       /* Last time we rendered a frame */
-    
-    /* Performance tracking */
-    uint64_t last_fps_time;        /* Last time FPS was calculated */
-    int fps_count;                 /* Frame count for FPS calculation */
-    int current_fps;               /* Current FPS value */
-    
-    /* Efficiency tracking */
-    bool needs_render;             /* Only render when true */
-    bool game_state_changed;       /* Track if game state changed */
-    uint64_t last_activity_time;   /* Time of last user activity */
-    uint8_t power_mode;            /* Current power mode (0=Performance, 1=Balanced, 2=Efficient) */
-    
-    /* Dirty region tracking */
-    SDL_FRect dirty_regions[MAX_DIRTY_REGIONS];   /* List of regions needing redraw */
-    int dirty_region_count;        /* Number of dirty regions */
-} AppState;
-
-/*
- * Pre-computed lookup tables for movement
- */
-extern const int8_t DIR_OFFSET_X[4];  /* RIGHT, UP, LEFT, DOWN */
-extern const int8_t DIR_OFFSET_Y[4];  /* RIGHT, UP, LEFT, DOWN */
-
-/* Power state colors */
-extern const SDL_Color CELL_COLORS[CELL_MAX];  /* Colors for different cell types */
-extern const SDL_Color PLAYER_COLOR;           /* Player color */
-extern const SDL_Color ENTITY_COLORS[ENTITY_MAX]; /* Colors for different entity types */
-extern const SDL_Color GRID_LINE_COLOR;        /* Grid line color */
-extern const SDL_Color PAUSED_OVERLAY_COLOR;   /* Semi-transparent overlay for paused state */
-
-/*
- * Function Declarations
- */
-
-/* Game functions (game.c) */
-void init_game(GameState* game);
-void update_game_logic_fixed_step(GameState* game);
-CellType get_cell(const GameState* game, int x, int y);
-void set_cell(GameState* game, int x, int y, CellType type);
-bool is_valid_move(const GameState* game, int x, int y, Direction dir);
-void get_target_position(int x, int y, Direction dir, int* target_x, int* target_y);
-bool are_directions_opposite(Direction dir1, Direction dir2);
-bool start_movement(GameState* game, Direction dir);
-void get_visual_position(const MovementState* movement, float* visual_x, float* visual_y);
-void complete_movement(GameState* game);
-Direction get_direction(const MovementState* movement);
-void set_direction(MovementState* movement, Direction dir);
-bool is_in_viewport(const GameState* game, int x, int y);
-void grid_to_viewport(const GameState* game, int grid_x, int grid_y, int* viewport_x, int* viewport_y);
-void viewport_to_grid(const GameState* game, int viewport_x, int viewport_y, int* grid_x, int* grid_y);
-void update_viewport_cache(GameState* game);
-CellType get_cell_from_cache(const GameState* game, int viewport_x, int viewport_y);
-
-/* Entity functions (entity.c) */
-void init_entity_system(GameState* game);
-void add_entity(GameState* game, uint8_t x, uint8_t y, Direction dir, EntityType type);
-void update_entity_system(GameState* game, uint64_t current_time);
-bool is_entity_at_position(const GameState* game, int x, int y);
-void get_entity_visual_position(const GameState* game, int entity_idx, float* visual_x, float* visual_y);
-void set_pivot_point(GameState* game, int x, int y, uint8_t behavior);
-uint8_t get_pivot_behavior(const GameState* game, int x, int y);
-Direction determine_new_direction(uint8_t entity_type, Direction current_dir, uint8_t pivot_behavior);
-void process_entity_collision(GameState* game, int entity_idx);
-bool check_player_entity_collision(GameState* game);
-void calculate_next_pivot_collision(GameState* game, int entity_idx);
-
-/* Input functions (input.c) */
-void process_key_event(InputState* input, SDL_Scancode key, bool pressed);
-void process_gamepad_button_event(InputState* input, Uint8 button, bool pressed);
-void process_gamepad_axis_event(InputState* input, Uint8 axis, Sint16 value);
-void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad);
-bool is_key_pressed(const InputState* input, Direction dir);
-void set_key_state(InputState* input, Direction dir, bool pressed);
-bool has_buffered_dir(const InputState* input);
-void set_has_buffered(InputState* input, bool has_buffered);
-bool is_restart_requested(const InputState* input);
-void set_restart_requested(InputState* input, bool requested);
-void initialize_gamepad(AppState* app);
-
-/* Rendering functions (render.c) */
-void render_game(AppState* app);
-void create_textures(AppState* app);
-void destroy_textures(AppState* app);
-void create_background_texture(AppState* app);
-void configure_rendering(AppState* app);
-void update_fps(AppState* app);
-void add_dirty_region(AppState* app, float x, float y, float w, float h);
+/* SDL App Callback Declarations */
+SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]);
+SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event);
+SDL_AppResult SDL_AppIterate(void* appstate);
+void SDL_AppQuit(void* appstate, SDL_AppResult result);
 
 /* Platform-specific functions (platform.c) */
 bool is_running_on_battery(void);
@@ -303,6 +50,4 @@ void toggle_fullscreen(AppState* app);
 void cycle_time_scale(AppState* app);
 void reset_activity_timer(AppState* app);
 
-/* Note: process_event is declared as static inside main.c */
-
-#endif /* GAME_H */
+#endif /* MAIN_H */

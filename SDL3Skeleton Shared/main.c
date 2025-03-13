@@ -13,10 +13,10 @@
 #include "game.h"
 #include "input.h"
 #include "entity.h"
-#include "physics.h"
+#include "collision.h"
 #include "viewport.h"
 #include "render.h"
-#include "collision.h"
+#include "level.h"
 
 /* Reduced FPS when paused but visible */
 #define PAUSED_FPS 5
@@ -314,6 +314,13 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
         
         /* Only update the last tick time after logic update */
         game->last_tick_time = current_time;
+        
+        /* Update window title with level info */
+        const LevelInfo* level_info = get_current_level_info(game);
+        char title[128];
+        snprintf(title, sizeof(title), "Bit-Twiddled Game Engine - Level %d: %s - FPS: %d",
+                 get_current_level(game) + 1, level_info->name, app->current_fps);
+        SDL_SetWindowTitle(app->window, title);
         
         /* Render the current game state */
         render_game(app);
