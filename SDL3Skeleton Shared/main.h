@@ -27,19 +27,25 @@
 #endif
 
 /*
- * Grid Configuration With Power-of-Two Dimensions
+ * Grid and Viewport Configuration With Power-of-Two Dimensions
  */
 #define GRID_WIDTH          64      /* Must be power of 2 for bit shifts */
-#define GRID_HEIGHT         32      /* Must be power of 2 for bit shifts */
+#define GRID_HEIGHT         64      /* Must be power of 2 for bit shifts */
 #define GRID_WIDTH_SHIFT    6       /* log2(64) = 6, used for shifting */
-#define GRID_HEIGHT_MASK    0x1F    /* 2^5 - 1 = 31, masks lower 5 bits */
+#define GRID_HEIGHT_SHIFT   6       /* log2(64) = 6, used for shifting */
+#define GRID_HEIGHT_MASK    0x3F    /* 2^6 - 1 = 63, masks lower 6 bits */
 #define GRID_WIDTH_MASK     0x3F    /* 2^6 - 1 = 63, masks lower 6 bits */
 #define GRID_SIZE           (GRID_WIDTH * GRID_HEIGHT)
 
+/* Viewport configuration for 16:9 aspect ratio */
+#define VIEWPORT_WIDTH      64      /* Same as grid width */
+#define VIEWPORT_HEIGHT     36      /* 16:9 aspect ratio */
+#define VIEWPORT_OFFSET_Y   14      /* (64-36)/2 = 14, centers the viewport vertically */
+
 /* Display configuration */
 #define PIXEL_SCALE         12      /* Screen pixels per grid cell */
-#define WINDOW_WIDTH        (GRID_WIDTH * PIXEL_SCALE)    /* Show full grid width */
-#define WINDOW_HEIGHT       (GRID_HEIGHT * PIXEL_SCALE)   /* Show full grid height */
+#define WINDOW_WIDTH        (VIEWPORT_WIDTH * PIXEL_SCALE)   /* Show full viewport width */
+#define WINDOW_HEIGHT       (VIEWPORT_HEIGHT * PIXEL_SCALE)  /* Show full viewport height */
 
 /* Game timing configuration */
 #define LOGIC_TICK_RATE     60      /* Game logic updates per second */
@@ -101,9 +107,9 @@ typedef struct {
 /* Movement state - 8 bytes */
 typedef struct {
     uint8_t pos_x;            /* Current X (0-63) */
-    uint8_t pos_y;            /* Current Y (0-31) */
+    uint8_t pos_y;            /* Current Y (0-63) */
     uint8_t target_x;         /* Target X (0-63) */
-    uint8_t target_y;         /* Target Y (0-31) */
+    uint8_t target_y;         /* Target Y (0-63) */
     uint8_t direction;        /* Current direction (0-3, 255 for none) */
     uint8_t is_moving;        /* Boolean: 1 if moving, 0 if not */
     uint8_t just_started;     /* Boolean: 1 if just started, 0 if not */
@@ -114,7 +120,15 @@ typedef struct {
 typedef struct {
     bool cells_changed;       /* True if any cells changed */
     uint64_t last_frame_updated; /* Last frame the grid texture was updated */
+    bool cache_valid;         /* True if viewport cache is valid */
 } GridState;
+
+/* Viewport state */
+typedef struct {
+    uint8_t offset_x;         /* X offset of viewport within grid */
+    uint8_t offset_y;         /* Y offset of viewport within grid */
+    uint8_t cache[VIEWPORT_WIDTH * VIEWPORT_HEIGHT]; /* Cache of visible cells for better locality */
+} ViewportState;
 
 /* Game State */
 typedef struct {
@@ -122,6 +136,7 @@ typedef struct {
     MovementState player;          /* Player movement state */
     InputState input;              /* Input state */
     GridState grid_state;          /* Grid change tracking */
+    ViewportState viewport;        /* Viewport position in grid */
     uint32_t frame_count;          /* Total frames executed (32-bit counter) */
     uint16_t accumulated_time;     /* Accumulated time since last tick (ms) */
     uint64_t last_tick_time;       /* Time of last logic tick */
@@ -195,6 +210,11 @@ void get_visual_position(const MovementState* movement, float* visual_x, float* 
 void complete_movement(GameState* game);
 Direction get_direction(const MovementState* movement);
 void set_direction(MovementState* movement, Direction dir);
+bool is_in_viewport(const GameState* game, int x, int y);
+void grid_to_viewport(const GameState* game, int grid_x, int grid_y, int* viewport_x, int* viewport_y);
+void viewport_to_grid(const GameState* game, int viewport_x, int viewport_y, int* grid_x, int* grid_y);
+void update_viewport_cache(GameState* game);
+CellType get_cell_from_cache(const GameState* game, int viewport_x, int viewport_y);
 
 /* Input functions (input.c) */
 void process_key_event(InputState* input, SDL_Scancode key, bool pressed);

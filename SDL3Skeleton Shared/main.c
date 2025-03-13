@@ -324,7 +324,6 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
         game->accumulated_time += delta_time;
         
         /* Run fixed time step updates */
-        int max_steps = 1; /* Limit to a single physics step per frame */
         if (game->accumulated_time >= LOGIC_TICK_MS) {
             update_game_logic_fixed_step(game);
             game->accumulated_time = 0; /* Just reset to avoid drift */

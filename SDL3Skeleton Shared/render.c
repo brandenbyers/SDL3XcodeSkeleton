@@ -6,6 +6,7 @@
  * - Scene drawing with dirty rectangle tracking
  * - Batch rendering for improved performance
  * - Optimized rendering configuration
+ * - Viewport rendering
  */
 
 #include "main.h"
@@ -61,12 +62,16 @@ void create_background_texture(AppState* app) {
         return;
     }
     
-    /* Collect all wall rectangles for batch rendering */
-    for (int y = 0; y < GRID_HEIGHT; y++) {
-        for (int x = 0; x < GRID_WIDTH; x++) {
-            if (get_cell(game, x, y) == CELL_WALL) {
-                wall_rects[wall_count].x = x * PIXEL_SCALE;
-                wall_rects[wall_count].y = y * PIXEL_SCALE;
+    /* Collect all wall rectangles for batch rendering - using cached values for efficiency */
+    for (int vy = 0; vy < VIEWPORT_HEIGHT; vy++) {
+        for (int vx = 0; vx < VIEWPORT_WIDTH; vx++) {
+            /* Get cell directly from viewport cache - much better cache locality */
+            int cache_idx = vy * VIEWPORT_WIDTH + vx;
+            CellType cell_type = (CellType)game->viewport.cache[cache_idx];
+            
+            if (cell_type == CELL_WALL) {
+                wall_rects[wall_count].x = vx * PIXEL_SCALE;
+                wall_rects[wall_count].y = vy * PIXEL_SCALE;
                 wall_rects[wall_count].w = wall_rects[wall_count].h = PIXEL_SCALE;
                 wall_count++;
             }
@@ -94,7 +99,7 @@ void create_background_texture(AppState* app) {
                            GRID_LINE_COLOR.a);
     
     /* Batch the grid lines for more efficient rendering */
-    SDL_FRect* grid_lines = (SDL_FRect*)SDL_malloc((GRID_WIDTH + GRID_HEIGHT + 2) * sizeof(SDL_FRect));
+    SDL_FRect* grid_lines = (SDL_FRect*)SDL_malloc((VIEWPORT_WIDTH + VIEWPORT_HEIGHT + 2) * sizeof(SDL_FRect));
     if (!grid_lines) {
         SDL_Log("Failed to allocate rectangles for grid line rendering");
         SDL_SetRenderTarget(app->renderer, NULL);
@@ -104,7 +109,7 @@ void create_background_texture(AppState* app) {
     int line_count = 0;
     
     /* Vertical grid lines (thin rectangles) */
-    for (int i = 0; i <= GRID_WIDTH; i++) {
+    for (int i = 0; i <= VIEWPORT_WIDTH; i++) {
         grid_lines[line_count].x = i * PIXEL_SCALE;
         grid_lines[line_count].y = 0;
         grid_lines[line_count].w = 1;
@@ -113,7 +118,7 @@ void create_background_texture(AppState* app) {
     }
     
     /* Horizontal grid lines (thin rectangles) */
-    for (int i = 0; i <= GRID_HEIGHT; i++) {
+    for (int i = 0; i <= VIEWPORT_HEIGHT; i++) {
         grid_lines[line_count].x = 0;
         grid_lines[line_count].y = i * PIXEL_SCALE;
         grid_lines[line_count].w = WINDOW_WIDTH;
@@ -249,6 +254,10 @@ void render_game(AppState* app) {
     
     /* On first render or after changes, regenerate background texture */
     if (game->grid_state.cells_changed) {
+        /* Ensure cache is up-to-date before rendering */
+        if (!game->grid_state.cache_valid) {
+            update_viewport_cache(&app->game);
+        }
         create_background_texture(app);
     }
     
@@ -266,12 +275,16 @@ void render_game(AppState* app) {
     if (rects) {
         int rect_count = 0;
         
-        /* Collect all item rectangles for batch rendering */
-        for (int y = 0; y < GRID_HEIGHT; y++) {
-            for (int x = 0; x < GRID_WIDTH; x++) {
-                if (get_cell(game, x, y) == CELL_ITEM) {
-                    rects[rect_count].x = x * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
-                    rects[rect_count].y = y * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
+        /* Collect all item rectangles for batch rendering - using cached values for efficiency */
+        for (int vy = 0; vy < VIEWPORT_HEIGHT; vy++) {
+            for (int vx = 0; vx < VIEWPORT_WIDTH; vx++) {
+                /* Get cell directly from viewport cache - much better cache locality */
+                int cache_idx = vy * VIEWPORT_WIDTH + vx;
+                CellType cell_type = (CellType)game->viewport.cache[cache_idx];
+                
+                if (cell_type == CELL_ITEM) {
+                    rects[rect_count].x = vx * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
+                    rects[rect_count].y = vy * PIXEL_SCALE + PIXEL_SCALE * 0.25f;
                     rects[rect_count].w = rects[rect_count].h = PIXEL_SCALE * 0.5f;
                     rect_count++;
                 }
@@ -295,19 +308,80 @@ void render_game(AppState* app) {
     float visual_x, visual_y;
     get_visual_position(&game->player, &visual_x, &visual_y);
     
+    /* Convert the player's grid position to viewport position */
+    int viewport_x, viewport_y;
+    grid_to_viewport(game, (int)visual_x, (int)visual_y, &viewport_x, &viewport_y);
+    
+    /* Calculate fractional part for smooth movement */
+    float frac_x = visual_x - (int)visual_x;
+    float frac_y = visual_y - (int)visual_y;
+    
+    /* Create rectangle for player in viewport coordinates */
     SDL_FRect player_rect = {
-        visual_x * PIXEL_SCALE,
-        visual_y * PIXEL_SCALE,
+        (viewport_x + frac_x) * PIXEL_SCALE,
+        (viewport_y + frac_y) * PIXEL_SCALE,
         PIXEL_SCALE,
         PIXEL_SCALE
     };
     
+    /* Special case for wrapping at viewport edges */
+    bool is_wrapping_x = false;
+    bool is_wrapping_y = false;
+    
+    /* Check if we're moving across a viewport edge with wrapping */
+    if (game->player.is_moving) {
+        int target_viewport_x, target_viewport_y;
+        grid_to_viewport(game, game->player.target_x, game->player.target_y,
+                         &target_viewport_x, &target_viewport_y);
+        
+        /* Check for horizontal wrapping */
+        if (abs(target_viewport_x - viewport_x) > VIEWPORT_WIDTH/2) {
+            is_wrapping_x = true;
+        }
+        
+        /* Check for vertical wrapping */
+        if (abs(target_viewport_y - viewport_y) > VIEWPORT_HEIGHT/2) {
+            is_wrapping_y = true;
+        }
+    }
+    
+    /* Draw the main player rectangle */
     SDL_SetRenderDrawColor(renderer,
                            PLAYER_COLOR.r,
                            PLAYER_COLOR.g,
                            PLAYER_COLOR.b,
                            PLAYER_COLOR.a);
     SDL_RenderFillRect(renderer, &player_rect);
+    
+    /* If wrapping, draw additional player rectangles at the wrapped positions */
+    if (is_wrapping_x || is_wrapping_y) {
+        SDL_FRect wrap_rect = player_rect;
+        
+        if (is_wrapping_x) {
+            /* Draw player wrapping horizontally */
+            wrap_rect.x = player_rect.x < WINDOW_WIDTH/2 ?
+            player_rect.x + WINDOW_WIDTH :
+            player_rect.x - WINDOW_WIDTH;
+            SDL_RenderFillRect(renderer, &wrap_rect);
+        }
+        
+        if (is_wrapping_y) {
+            /* Draw player wrapping vertically */
+            wrap_rect.x = player_rect.x; /* Reset x from previous wrapping if any */
+            wrap_rect.y = player_rect.y < WINDOW_HEIGHT/2 ?
+            player_rect.y + WINDOW_HEIGHT :
+            player_rect.y - WINDOW_HEIGHT;
+            SDL_RenderFillRect(renderer, &wrap_rect);
+            
+            if (is_wrapping_x) {
+                /* Draw player wrapping both horizontally and vertically */
+                wrap_rect.x = player_rect.x < WINDOW_WIDTH/2 ?
+                player_rect.x + WINDOW_WIDTH :
+                player_rect.x - WINDOW_WIDTH;
+                SDL_RenderFillRect(renderer, &wrap_rect);
+            }
+        }
+    }
     
     /* 4. If paused, draw a semi-transparent overlay */
     if (app->is_paused) {

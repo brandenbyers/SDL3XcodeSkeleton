@@ -3,6 +3,7 @@
  *
  * This file contains the core game mechanics, including:
  * - Grid management
+ * - Viewport handling
  * - Movement logic
  * - Game state initialization and updates
  *
@@ -16,6 +17,69 @@ const int8_t DIR_OFFSET_X[4] = {1, 0, -1, 0};   /* RIGHT, UP, LEFT, DOWN */
 const int8_t DIR_OFFSET_Y[4] = {0, -1, 0, 1};   /* RIGHT, UP, LEFT, DOWN */
 
 /*
+ * Viewport/Grid Conversion Functions
+ */
+
+/* Check if a grid coordinate is within the visible viewport */
+bool is_in_viewport(const GameState* game, int x, int y) {
+    /* Convert to viewport-relative coordinates with wrapping */
+    int rel_x = (x - game->viewport.offset_x) & GRID_WIDTH_MASK;
+    int rel_y = (y - game->viewport.offset_y) & GRID_HEIGHT_MASK;
+    
+    /* Check if within viewport bounds */
+    return (rel_x < VIEWPORT_WIDTH && rel_y < VIEWPORT_HEIGHT);
+}
+
+/* Convert grid coordinates to viewport coordinates */
+void grid_to_viewport(const GameState* game, int grid_x, int grid_y, int* viewport_x, int* viewport_y) {
+    /* Apply viewport offset with wrapping */
+    *viewport_x = (grid_x - game->viewport.offset_x) & GRID_WIDTH_MASK;
+    *viewport_y = (grid_y - game->viewport.offset_y) & GRID_HEIGHT_MASK;
+}
+
+/* Convert viewport coordinates to grid coordinates */
+void viewport_to_grid(const GameState* game, int viewport_x, int viewport_y, int* grid_x, int* grid_y) {
+    /* Apply viewport offset with wrapping */
+    *grid_x = (viewport_x + game->viewport.offset_x) & GRID_WIDTH_MASK;
+    *grid_y = (viewport_y + game->viewport.offset_y) & GRID_HEIGHT_MASK;
+}
+
+/* Update the viewport cache for better CPU cache locality */
+void update_viewport_cache(GameState* game) {
+    /* Fill the viewport cache with current grid data */
+    for (int vy = 0; vy < VIEWPORT_HEIGHT; vy++) {
+        for (int vx = 0; vx < VIEWPORT_WIDTH; vx++) {
+            /* Get grid coordinates */
+            int grid_x, grid_y;
+            viewport_to_grid(game, vx, vy, &grid_x, &grid_y);
+            
+            /* Get cell from main grid */
+            CellType cell = get_cell(game, grid_x, grid_y);
+            
+            /* Store in cache using linear indexing for contiguous memory access */
+            int cache_idx = vy * VIEWPORT_WIDTH + vx;
+            game->viewport.cache[cache_idx] = cell;
+        }
+    }
+    
+    /* Mark cache as valid */
+    game->grid_state.cache_valid = true;
+}
+
+/* Get cell from viewport cache for efficient rendering */
+CellType get_cell_from_cache(const GameState* game, int viewport_x, int viewport_y) {
+    /* Bounds check */
+    if (viewport_x < 0 || viewport_x >= VIEWPORT_WIDTH ||
+        viewport_y < 0 || viewport_y >= VIEWPORT_HEIGHT) {
+        return CELL_EMPTY;
+    }
+    
+    /* Direct access to the cache with linear indexing */
+    int cache_idx = viewport_y * VIEWPORT_WIDTH + viewport_x;
+    return (CellType)game->viewport.cache[cache_idx];
+}
+
+/*
  * Optimized Grid Functions
  */
 
@@ -25,7 +89,7 @@ CellType get_cell(const GameState* game, int x, int y) {
     x &= GRID_WIDTH_MASK;
     y &= GRID_HEIGHT_MASK;
     
-    /* Calculate flat index with bit shifts (still efficient for power-of-two sizes) */
+    /* Calculate flat index with bit shifts (efficient for power-of-two sizes) */
     int idx = (y << GRID_WIDTH_SHIFT) | x;
     
     /* Direct array access - much more cache friendly */
@@ -45,6 +109,17 @@ void set_cell(GameState* game, int x, int y, CellType type) {
     if (game->grid[idx] != type) {
         game->grid[idx] = type;
         game->grid_state.cells_changed = true;
+        
+        /* Invalidate cache since grid changed */
+        game->grid_state.cache_valid = false;
+        
+        /* If cell is in viewport, also update cache directly for write-through caching */
+        if (is_in_viewport(game, x, y)) {
+            int viewport_x, viewport_y;
+            grid_to_viewport(game, x, y, &viewport_x, &viewport_y);
+            int cache_idx = viewport_y * VIEWPORT_WIDTH + viewport_x;
+            game->viewport.cache[cache_idx] = type;
+        }
     }
 }
 
@@ -239,41 +314,102 @@ void init_game(GameState* game) {
     /* Clear the grid */
     memset(game->grid, CELL_EMPTY, GRID_SIZE);
     
-    /* Add walls for a simple maze */
+    /* Initialize viewport position (centered vertically) */
+    game->viewport.offset_x = 0;
+    game->viewport.offset_y = VIEWPORT_OFFSET_Y;
     
-    /* Outer walls */
-    for (int i = 0; i < GRID_WIDTH; i++) {
-        set_cell(game, i, 0, CELL_WALL);              /* Top wall */
-        set_cell(game, i, GRID_HEIGHT - 1, CELL_WALL); /* Bottom wall */
+    /* Initialize cache tracking */
+    game->grid_state.cache_valid = false;
+    
+    /* Add walls for a simple maze - now using the full 64x64 grid */
+    
+    /* Outer walls around the viewport */
+    for (int i = 0; i < VIEWPORT_WIDTH; i++) {
+        /* Get actual grid coordinates for viewport positions */
+        int grid_x, grid_y;
+        
+        /* Top wall */
+        viewport_to_grid(game, i, 0, &grid_x, &grid_y);
+        set_cell(game, grid_x, grid_y, CELL_WALL);
+        
+        /* Bottom wall */
+        viewport_to_grid(game, i, VIEWPORT_HEIGHT - 1, &grid_x, &grid_y);
+        set_cell(game, grid_x, grid_y, CELL_WALL);
     }
     
-    /* Inner walls for testing */
+    /* Side walls of the viewport */
+    for (int j = 0; j < VIEWPORT_HEIGHT; j++) {
+        /* Get actual grid coordinates for viewport positions */
+        int grid_x, grid_y;
+        
+        /* Left wall */
+        viewport_to_grid(game, 0, j, &grid_x, &grid_y);
+        set_cell(game, grid_x, grid_y, CELL_WALL);
+        
+        /* Right wall */
+        viewport_to_grid(game, VIEWPORT_WIDTH - 1, j, &grid_x, &grid_y);
+        set_cell(game, grid_x, grid_y, CELL_WALL);
+    }
+    
+    /* Inner walls for testing - convert from viewport to grid coordinates */
     for (int x = 10; x < 20; x++) {
-        set_cell(game, x, 10, CELL_WALL);
-        set_cell(game, x + 20, 15, CELL_WALL);
+        int grid_x, grid_y;
+        
+        /* First horizontal wall */
+        viewport_to_grid(game, x, 10, &grid_x, &grid_y);
+        set_cell(game, grid_x, grid_y, CELL_WALL);
+        
+        /* Second horizontal wall */
+        viewport_to_grid(game, x + 20, 15, &grid_x, &grid_y);
+        set_cell(game, grid_x, grid_y, CELL_WALL);
     }
     
     /* Add corner testing area */
     for (int y = 20; y < 25; y++) {
-        set_cell(game, 10, y, CELL_WALL);
-        set_cell(game, 20, y, CELL_WALL);
-    }
-    for (int x = 11; x < 20; x++) {
-        set_cell(game, x, 20, CELL_WALL);
+        int grid_x, grid_y;
+        
+        /* Left vertical wall */
+        viewport_to_grid(game, 10, y, &grid_x, &grid_y);
+        set_cell(game, grid_x, grid_y, CELL_WALL);
+        
+        /* Right vertical wall */
+        viewport_to_grid(game, 20, y, &grid_x, &grid_y);
+        set_cell(game, grid_x, grid_y, CELL_WALL);
     }
     
-    /* Add some items for collection */
+    /* Horizontal wall for corner area */
+    for (int x = 11; x < 20; x++) {
+        int grid_x, grid_y;
+        viewport_to_grid(game, x, 20, &grid_x, &grid_y);
+        set_cell(game, grid_x, grid_y, CELL_WALL);
+    }
+    
+    /* Add some items for collection - scatter throughout the viewport area */
     for (int i = 0; i < 40; i++) {
-        int x = rand() & GRID_WIDTH_MASK;  /* Random x (0-63) */
-        int y = rand() & GRID_HEIGHT_MASK; /* Random y (0-31) */
-        if (get_cell(game, x, y) == CELL_EMPTY) {
-            set_cell(game, x, y, CELL_ITEM);
+        /* Generate random viewport coordinates */
+        int viewport_x = rand() % VIEWPORT_WIDTH;
+        int viewport_y = rand() % VIEWPORT_HEIGHT;
+        
+        /* Convert to grid coordinates */
+        int grid_x, grid_y;
+        viewport_to_grid(game, viewport_x, viewport_y, &grid_x, &grid_y);
+        
+        if (get_cell(game, grid_x, grid_y) == CELL_EMPTY) {
+            set_cell(game, grid_x, grid_y, CELL_ITEM);
         }
     }
     
-    /* Initialize player in center of grid */
-    game->player.pos_x = GRID_WIDTH >> 1;   /* Center X (32) */
-    game->player.pos_y = GRID_HEIGHT >> 1;  /* Center Y (16) */
+    /* Initialize player in center of viewport */
+    int viewport_center_x = VIEWPORT_WIDTH >> 1;
+    int viewport_center_y = VIEWPORT_HEIGHT >> 1;
+    
+    /* Convert to grid coordinates */
+    int grid_center_x, grid_center_y;
+    viewport_to_grid(game, viewport_center_x, viewport_center_y, &grid_center_x, &grid_center_y);
+    
+    /* Set player position to grid coordinates */
+    game->player.pos_x = grid_center_x;
+    game->player.pos_y = grid_center_y;
     game->player.target_x = game->player.pos_x;
     game->player.target_y = game->player.pos_y;
     game->player.direction = DIR_NONE;
