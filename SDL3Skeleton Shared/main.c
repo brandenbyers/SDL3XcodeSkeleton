@@ -37,6 +37,7 @@ static GridState s_grid_state;
 static ViewportState s_viewport;
 static EntitySystem s_entities;
 static CollisionSystem s_collision;
+static GlitchState s_glitch;
 
 /*
  * Initialize the Game State with Components
@@ -49,6 +50,7 @@ static void setup_game_state(GameState* game) {
     game->viewport = &s_viewport;
     game->entities = &s_entities;
     game->collision = &s_collision;
+    game->glitch = &s_glitch;
 }
 
 /*
@@ -186,13 +188,23 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             } else if (event->key.scancode == SDL_SCANCODE_T) {
                 cycle_time_scale(app);
             } else if (event->key.scancode == SDL_SCANCODE_P) {
-                /* Toggle pause state */
-                app->is_paused = !app->is_paused;
+                /* Start glitch effect for pause toggle WITHOUT changing actual pause state yet */
+                GlitchType type = game->glitch->paused ? GLITCH_UNPAUSE : GLITCH_PAUSE;
+                
+                /* For unpausing, we need to temporarily set the frame rate to normal first */
+                if (type == GLITCH_UNPAUSE) {
+                    app->target_fps = LOGIC_TICK_RATE; /* Restore normal frame rate */
+                }
+                
+                start_glitch_effect(game, type);
                 app->needs_render = true;
-                SDL_Log("Game %s", app->is_paused ? "Paused" : "Resumed");
+                
+                /* The actual pause state will be set after the glitch effect completes */
+                SDL_Log("Game %s transition started",
+                        type == GLITCH_PAUSE ? "Pause" : "Resume");
             } else {
                 /* Only process game input when not paused */
-                if (!app->is_paused) {
+                if (!game->glitch->paused) {
                     process_key_event(game->input, event->key.scancode, true);
                     app->game_state_changed = true;
                 }
@@ -202,7 +214,7 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             
         case SDL_EVENT_KEY_UP:
             /* Only process game input when not paused */
-            if (!app->is_paused) {
+            if (!game->glitch->paused) {
                 process_key_event(game->input, event->key.scancode, false);
                 app->game_state_changed = true;
             }
@@ -210,7 +222,7 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
             /* Process gamepad button press */
-            if (!app->is_paused) {
+            if (!game->glitch->paused) {
                 process_gamepad_button_event(game->input, event->gbutton.button, true);
                 app->game_state_changed = true;
             }
@@ -218,7 +230,7 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             
         case SDL_EVENT_GAMEPAD_BUTTON_UP:
             /* Process gamepad button release */
-            if (!app->is_paused) {
+            if (!game->glitch->paused) {
                 process_gamepad_button_event(game->input, event->gbutton.button, false);
                 app->game_state_changed = true;
             }
@@ -226,7 +238,7 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             
         case SDL_EVENT_GAMEPAD_AXIS_MOTION:
             /* Process gamepad axis motion */
-            if (!app->is_paused) {
+            if (!game->glitch->paused) {
                 process_gamepad_axis_event(game->input, event->gaxis.axis, event->gaxis.value);
                 app->game_state_changed = true;
             }
@@ -240,21 +252,25 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
             app->is_in_background = false;
             if (app->is_paused && app->was_auto_paused) {
-                app->is_paused = false;
+                /* For unpausing, restore normal frame rate first */
+                app->target_fps = LOGIC_TICK_RATE;
+                /* Start glitch effect for resume */
+                start_glitch_effect(game, GLITCH_UNPAUSE);
                 app->was_auto_paused = false;
                 app->needs_render = true;
-                SDL_Log("Game auto-resumed from background");
+                SDL_Log("Game auto-resume transition started");
             }
             update_power_state(app);
             break;
             
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             app->is_in_background = true;
-            if (!app->is_paused) {
-                app->is_paused = true;
+            if (!app->is_paused && !game->glitch->active) {
+                /* Start glitch effect for auto-pause without changing frame rate yet */
+                start_glitch_effect(game, GLITCH_PAUSE);
                 app->was_auto_paused = true;
                 app->needs_render = true;
-                SDL_Log("Game auto-paused (backgrounded)");
+                SDL_Log("Game auto-pause transition started");
             }
             update_power_state(app);
             break;
@@ -289,8 +305,11 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     uint64_t current_time = SDL_GetTicks();
     uint64_t frame_time = current_time - app->last_render_time;
     
-    /* If paused, just render occasionally and sleep */
-    if (app->is_paused) {
+    /* Sync app pause state with glitch system's pause state */
+    app->is_paused = game->glitch->paused;
+    
+    /* If paused and not in glitch effect, just render occasionally and sleep */
+    if (app->is_paused && !game->glitch->active) {
         /* When paused, render at a reduced rate */
         if (frame_time >= (1000 / PAUSED_FPS)) {
             render_game(app);

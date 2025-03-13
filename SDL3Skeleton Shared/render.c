@@ -27,7 +27,7 @@ const SDL_Color CELL_COLORS[CELL_MAX] = {
 };
 const SDL_Color PLAYER_COLOR = { 0, 255, 0, 255 };  /* Player: green */
 const SDL_Color GRID_LINE_COLOR = { 32, 32, 32, 255 }; /* Grid lines: dark gray */
-const SDL_Color PAUSED_OVERLAY_COLOR = { 0, 0, 32, 128 }; /* Transparent dark blue */
+const SDL_Color PAUSED_OVERLAY_COLOR = { 0, 0, 32, 80 }; /* Transparent dark blue */
 
 /* Simple bitmap font for the "PAUSED" text using blocks (each character is 5×7 pixels) */
 static const uint8_t BITMAP_FONT[26][7] = {
@@ -545,8 +545,8 @@ void render_game(AppState* app) {
         }
     }
     
-    /* 5. If paused, draw a semi-transparent overlay with PAUSED text */
-    if (app->is_paused) {
+    /* 5. If paused and not in glitch transition, draw a semi-transparent overlay with PAUSED text */
+    if (game->glitch->paused && !game->glitch->active) {
         /* Draw a translucent dark blue overlay */
         SDL_SetRenderDrawColor(renderer,
                                PAUSED_OVERLAY_COLOR.r,
@@ -567,9 +567,148 @@ void render_game(AppState* app) {
         render_bitmap_string(renderer, "PAUSED", text_x, text_y, 3, text_color);
     }
     
+    /* 6. Render glitch effects if active */
+    render_glitch_effects(renderer, game);
+    
     /* Present the rendered frame */
     SDL_RenderPresent(renderer);
     
     /* Update FPS counter */
     update_fps(app);
+}
+
+/*
+ * Render glitch effects over the current frame
+ */
+void render_glitch_effects(SDL_Renderer* renderer, const GameState* game) {
+    const GlitchState* glitch = game->glitch;
+    
+    /* If not active, nothing to render */
+    if (!glitch->active) {
+        return;
+    }
+    
+    /* 1. Render scanlines with horizontal displacement */
+    for (int i = 0; i < glitch->scanline_count; i++) {
+        int y = glitch->scanline_y[i];
+        int height = glitch->scanline_height[i];
+        int shift = glitch->scanline_shifts[i];
+        
+        /* Create two rects: one for the black gap and one for the shifted content */
+        SDL_FRect gap_rect = {
+            0, y, WINDOW_WIDTH, height
+        };
+        
+        /* Set very dark color for the gap */
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderFillRect(renderer, &gap_rect);
+        
+        /* If we have a shift, copy part of the screen to create tearing effect */
+        if (shift != 0) {
+            /* This would normally use SDL_RenderTexture with source and dest rects
+             to copy part of the screen, but that's complex to implement here.
+             Instead, we'll draw colored rectangles to simulate the effect. */
+            
+            /* Create a rectangle for the shifted part */
+            SDL_FRect shift_rect = {
+                shift > 0 ? 0 : -shift, y,
+                WINDOW_WIDTH - abs(shift), height
+            };
+            
+            /* Use a distorted color for the shifted part */
+            uint8_t r = (y % 255);
+            uint8_t g = ((y * 3) % 255);
+            uint8_t b = ((y * 7) % 255);
+            SDL_SetRenderDrawColor(renderer, r, g, b, 180);
+            SDL_RenderFillRect(renderer, &shift_rect);
+            
+            /* Add noise/static in the shifted part */
+            for (int j = 0; j < 20; j++) {
+                int noise_x = rand() % (int)shift_rect.w;
+                SDL_FRect noise_rect = {
+                    shift_rect.x + noise_x, y, 2, height
+                };
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 100);
+                SDL_RenderFillRect(renderer, &noise_rect);
+            }
+        }
+    }
+    
+    /* 2. Apply global color shifting if active */
+    if (glitch->color_shift_r || glitch->color_shift_g || glitch->color_shift_b) {
+        /* Create a full-screen semi-transparent overlay with shifted colors */
+        SDL_FRect overlay = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
+        
+        /* Set a semi-transparent color with the shifts */
+        SDL_SetRenderDrawColor(renderer,
+                               glitch->color_shift_r,
+                               glitch->color_shift_g,
+                               glitch->color_shift_b,
+                               50);  /* Low alpha for subtle effect */
+        SDL_RenderFillRect(renderer, &overlay);
+    }
+    
+    /* 3. Random data corruption: add small colored rectangles randomly */
+    int corruption_count = 20 + (rand() % 40);
+    for (int i = 0; i < corruption_count; i++) {
+        int x = rand() % WINDOW_WIDTH;
+        int y = rand() % WINDOW_HEIGHT;
+        int w = 1 + (rand() % 4);
+        int h = 1 + (rand() % 4);
+        
+        SDL_FRect corrupt_rect = { x, y, w, h };
+        
+        /* Random color for corruption */
+        SDL_SetRenderDrawColor(renderer,
+                               rand() % 255,
+                               rand() % 255,
+                               rand() % 255,
+                               128 + (rand() % 128));
+        SDL_RenderFillRect(renderer, &corrupt_rect);
+    }
+    
+    /* 4. Render expansion highlight */
+    if (glitch->expansion_radius > 0 && glitch->expansion_radius < GLITCH_EXPAND_MAX) {
+        /* Draw a circle expanding from the highlight position */
+        float radius = glitch->expansion_radius;
+        int center_x = glitch->highlight_pos_x;
+        int center_y = glitch->highlight_pos_y;
+        
+        /* Calculate alpha based on radius (fade out as it expands) */
+        uint8_t alpha = 255 - (uint8_t)((radius / GLITCH_EXPAND_MAX) * 255);
+        
+        /* Use a bright white color for the highlight */
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, alpha);
+        
+        /* Draw a "circle" using line segments */
+        for (int i = 0; i < 16; i++) {
+            float angle1 = (i / 16.0f) * 2 * M_PI;
+            float angle2 = ((i + 1) / 16.0f) * 2 * M_PI;
+            
+            float x1 = center_x + radius * cosf(angle1);
+            float y1 = center_y + radius * sinf(angle1);
+            float x2 = center_x + radius * cosf(angle2);
+            float y2 = center_y + radius * sinf(angle2);
+            
+            SDL_RenderLine(renderer, x1, y1, x2, y2);
+        }
+        
+        /* Draw another thinner circle with decreasing radius */
+        float inner_radius = radius - 4;
+        if (inner_radius > 0) {
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, alpha/2);
+            
+            for (int i = 0; i < 16; i++) {
+                float angle1 = (i / 16.0f) * 2 * M_PI;
+                float angle2 = ((i + 1) / 16.0f) * 2 * M_PI;
+                
+                float x1 = center_x + inner_radius * cosf(angle1);
+                float y1 = center_y + inner_radius * sinf(angle1);
+                float x2 = center_x + inner_radius * cosf(angle2);
+                float y2 = center_y + inner_radius * sinf(angle2);
+                
+                SDL_RenderLine(renderer, x1, y1, x2, y2);
+            }
+        }
+    }
 }

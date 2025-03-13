@@ -26,5 +26,6 @@ void create_background_texture(AppState* app);
 void configure_rendering(AppState* app);
 void update_fps(AppState* app);
 void add_dirty_region(AppState* app, float x, float y, float w, float h);
+void render_glitch_effects(SDL_Renderer* renderer, const GameState* game);
 
 #endif /* RENDER_H */

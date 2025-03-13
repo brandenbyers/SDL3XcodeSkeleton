@@ -79,6 +79,42 @@ typedef enum {
     DIR_COUNT = 4
 } Direction;
 
+/* Glitch effect parameters */
+#define GLITCH_FRAMES       12      /* Frames to show the glitch effect */
+#define GLITCH_SCANLINES    4       /* Number of scanline artifacts */
+#define GLITCH_SHIFT_MAX    10      /* Maximum horizontal shift in pixels */
+#define GLITCH_EXPAND_SPEED 4       /* Speed of expansion highlight */
+#define GLITCH_EXPAND_MAX   40      /* Maximum radius of expansion highlight */
+#define GLITCH_SHIFT_PROB   0.4f    /* Probability of a scanline shifting */
+#define GLITCH_COLOR_PROB   0.3f    /* Probability of color distortion */
+
+/* Glitch effect types */
+typedef enum {
+    GLITCH_RESTART,                /* Glitch for level restart */
+    GLITCH_PAUSE,                  /* Glitch for pausing the game */
+    GLITCH_UNPAUSE                 /* Glitch for unpausing the game */
+} GlitchType;
+
+/* Glitch effect state */
+typedef struct GlitchState {
+    bool active;                    /* Is glitch effect active? */
+    GlitchType type;                /* Type of glitch (restart or pause) */
+    uint8_t frame_count;            /* Current frame of glitch effect */
+    uint8_t scanline_count;         /* Number of scanlines for this glitch */
+    int16_t scanline_shifts[GLITCH_SCANLINES]; /* Horizontal shifts for each scanline */
+    int16_t scanline_y[GLITCH_SCANLINES];      /* Y position for each scanline */
+    uint8_t scanline_height[GLITCH_SCANLINES]; /* Height for each scanline */
+    uint8_t color_shift_r;          /* Color shift amount for red */
+    uint8_t color_shift_g;          /* Color shift amount for green */
+    uint8_t color_shift_b;          /* Color shift amount for blue */
+    float expansion_radius;         /* Current radius of highlight expansion */
+    int highlight_pos_x;            /* X position for highlight center (spawn or player) */
+    int highlight_pos_y;            /* Y position for highlight center (spawn or player) */
+    bool paused;                    /* Tracks if game is paused after glitch */
+    bool pending_pause_toggle;      /* Tracks if we need to toggle pause after glitch */
+    bool target_pause_state;        /* The desired pause state after glitch completes */
+} GlitchState;
+
 /* Game State */
 typedef struct {
     uint8_t grid[GRID_SIZE];       /* Visual grid: one byte per cell */
@@ -88,6 +124,7 @@ typedef struct {
     struct ViewportState* viewport; /* Viewport position in grid */
     struct EntitySystem* entities;  /* Entity system */
     struct CollisionSystem* collision; /* Collision system */
+    struct GlitchState* glitch;     /* Glitch effect state */
     uint32_t frame_count;          /* Total frames executed (32-bit counter) */
     uint16_t accumulated_time;     /* Accumulated time since last tick (ms) */
     uint64_t last_tick_time;       /* Time of last logic tick */
@@ -141,6 +178,12 @@ void init_game(GameState* game);
 void update_game_logic_fixed_step(GameState* game);
 CellType get_cell(const GameState* game, int x, int y);
 void set_cell(GameState* game, int x, int y, CellType type);
+
+/* Glitch effect functions */
+void init_glitch_state(GlitchState* glitch);
+void start_glitch_effect(GameState* game, GlitchType type);
+void update_glitch_effect(GameState* game);
+bool is_glitch_active(const GameState* game);
 
 /* Platform-specific functions (platform.c) */
 bool is_running_on_battery(void);
