@@ -321,6 +321,9 @@ void init_game(GameState* game) {
     /* Initialize cache tracking */
     game->grid_state.cache_valid = false;
     
+    /* Initialize entity system */
+    init_entity_system(game);
+    
     /* Add walls for a simple maze - now using the full 64x64 grid */
     
     /* Outer walls around the viewport */
@@ -350,6 +353,20 @@ void init_game(GameState* game) {
         viewport_to_grid(game, VIEWPORT_WIDTH - 1, j, &grid_x, &grid_y);
         set_cell(game, grid_x, grid_y, CELL_WALL);
     }
+    
+    /* Add pivot points near walls for entity movement */
+    int pivot_x, pivot_y;
+    
+    /* Left side pivot */
+    viewport_to_grid(game, 4, VIEWPORT_HEIGHT/2, &pivot_x, &pivot_y);
+    set_pivot_point(game, pivot_x, pivot_y, PIVOT_REVERSE);
+    
+    /* Right side pivot */
+    viewport_to_grid(game, VIEWPORT_WIDTH - 5, VIEWPORT_HEIGHT/2, &pivot_x, &pivot_y);
+    set_pivot_point(game, pivot_x, pivot_y, PIVOT_REVERSE);
+    
+    /* Add a patrol entity */
+    add_entity(game, pivot_x, pivot_y, DIR_LEFT, ENTITY_PATROL);
     
     /* Inner walls for testing - convert from viewport to grid coordinates */
     for (int x = 10; x < 20; x++) {
@@ -447,8 +464,11 @@ void update_game_logic_fixed_step(GameState* game) {
     /* Only increment frame counter when something is happening */
     game->frame_count++;
     
-    /* Early exit if no input and not moving */
-    if (input->current_dir == DIR_NONE && !movement->is_moving) {
+    /* Update entity system */
+    update_entity_system(game, game->last_tick_time);
+    
+    /* Early exit if no input and not moving and no entity update needed */
+    if (input->current_dir == DIR_NONE && !movement->is_moving && !game->entities.needs_update) {
         return; /* No update needed */
     }
     

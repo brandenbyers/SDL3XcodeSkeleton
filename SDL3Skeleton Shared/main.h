@@ -84,7 +84,8 @@ typedef enum {
     CELL_EMPTY = 0,
     CELL_WALL  = 1,
     CELL_ITEM  = 2,
-    CELL_MAX   = 3  /* Not used as a cell value, just for array bounds */
+    CELL_PIVOT = 3,    /* Pivot point that affects entity movement */
+    CELL_MAX   = 4     /* Not used as a cell value, just for array bounds */
 } CellType;
 
 /* Movement direction encoding */
@@ -130,13 +131,54 @@ typedef struct {
     uint8_t cache[VIEWPORT_WIDTH * VIEWPORT_HEIGHT]; /* Cache of visible cells for better locality */
 } ViewportState;
 
+/* Pivot point behavior types */
+#define PIVOT_REVERSE      0x01  /* Entity reverses direction */
+#define PIVOT_TURN_RIGHT   0x02  /* Entity turns 90° right */
+#define PIVOT_TURN_LEFT    0x04  /* Entity turns 90° left */
+#define PIVOT_CONDITIONAL  0x08  /* Use entity's internal rules */
+
+/* Entity type definitions */
+typedef enum {
+    ENTITY_PATROL = 0,        /* Simple back-and-forth patrol */
+    ENTITY_CLOCKWISE = 1,     /* Always turns right (clockwise) at intersections */
+    ENTITY_MAX = 2            /* Maximum number of entity types */
+} EntityType;
+
+/* Maximum number of entities */
+#define MAX_ENTITIES 16
+
+/* Entity structure - designed for cache efficiency with SoA pattern */
+typedef struct {
+    uint8_t pos_x[MAX_ENTITIES];          /* Current X positions */
+    uint8_t pos_y[MAX_ENTITIES];          /* Current Y positions */
+    uint8_t target_x[MAX_ENTITIES];       /* Target X positions */
+    uint8_t target_y[MAX_ENTITIES];       /* Target Y positions */
+    uint8_t direction[MAX_ENTITIES];      /* Current directions */
+    uint8_t entity_type[MAX_ENTITIES];    /* Entity behavior types */
+    uint8_t is_active[MAX_ENTITIES];      /* 1 if entity is active, 0 if not */
+    uint8_t is_moving[MAX_ENTITIES];      /* 1 if entity is moving, 0 if not */
+    uint8_t move_frame[MAX_ENTITIES];     /* Current movement frame */
+    uint64_t next_update_time[MAX_ENTITIES]; /* Next time this entity needs update */
+    uint8_t count;                        /* Number of active entities */
+    uint64_t next_event_time;             /* Time of the next entity event */
+    bool needs_update;                    /* True if any entity needs updating */
+} EntitySystem;
+
+/* Pivot point data - one byte per pivot point */
+typedef struct {
+    uint8_t behavior[GRID_SIZE];   /* Behavior bits for each grid cell */
+    bool has_pivot[GRID_SIZE];     /* Quick lookup for pivot existence */
+} PivotSystem;
+
 /* Game State */
 typedef struct {
-    uint8_t grid[GRID_SIZE];      /* Grid: one byte per cell for better cache efficiency */
+    uint8_t grid[GRID_SIZE];       /* Grid: one byte per cell for better cache efficiency */
     MovementState player;          /* Player movement state */
     InputState input;              /* Input state */
     GridState grid_state;          /* Grid change tracking */
     ViewportState viewport;        /* Viewport position in grid */
+    EntitySystem entities;         /* Entity system */
+    PivotSystem pivots;            /* Pivot point system */
     uint32_t frame_count;          /* Total frames executed (32-bit counter) */
     uint16_t accumulated_time;     /* Accumulated time since last tick (ms) */
     uint64_t last_tick_time;       /* Time of last logic tick */
@@ -190,6 +232,7 @@ extern const int8_t DIR_OFFSET_Y[4];  /* RIGHT, UP, LEFT, DOWN */
 /* Power state colors */
 extern const SDL_Color CELL_COLORS[CELL_MAX];  /* Colors for different cell types */
 extern const SDL_Color PLAYER_COLOR;           /* Player color */
+extern const SDL_Color ENTITY_COLORS[ENTITY_MAX]; /* Colors for different entity types */
 extern const SDL_Color GRID_LINE_COLOR;        /* Grid line color */
 extern const SDL_Color PAUSED_OVERLAY_COLOR;   /* Semi-transparent overlay for paused state */
 
@@ -216,10 +259,23 @@ void viewport_to_grid(const GameState* game, int viewport_x, int viewport_y, int
 void update_viewport_cache(GameState* game);
 CellType get_cell_from_cache(const GameState* game, int viewport_x, int viewport_y);
 
+/* Entity functions (entity.c) */
+void init_entity_system(GameState* game);
+void add_entity(GameState* game, uint8_t x, uint8_t y, Direction dir, EntityType type);
+void update_entity_system(GameState* game, uint64_t current_time);
+bool is_entity_at_position(const GameState* game, int x, int y);
+void get_entity_visual_position(const GameState* game, int entity_idx, float* visual_x, float* visual_y);
+void set_pivot_point(GameState* game, int x, int y, uint8_t behavior);
+uint8_t get_pivot_behavior(const GameState* game, int x, int y);
+Direction determine_new_direction(uint8_t entity_type, Direction current_dir, uint8_t pivot_behavior);
+void process_entity_collision(GameState* game, int entity_idx);
+bool check_player_entity_collision(GameState* game);
+void calculate_next_pivot_collision(GameState* game, int entity_idx);
+
 /* Input functions (input.c) */
 void process_key_event(InputState* input, SDL_Scancode key, bool pressed);
-void process_gamepad_button_event(InputState* input, uint8_t button, bool pressed);
-void process_gamepad_axis_event(InputState* input, uint8_t axis, int16_t value);
+void process_gamepad_button_event(InputState* input, Uint8 button, bool pressed);
+void process_gamepad_axis_event(InputState* input, Uint8 axis, Sint16 value);
 void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad);
 bool is_key_pressed(const InputState* input, Direction dir);
 void set_key_state(InputState* input, Direction dir, bool pressed);

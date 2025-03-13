@@ -16,6 +16,7 @@ const SDL_Color CELL_COLORS[CELL_MAX] = {
     { 0,   0,   0,   255 },  /* CELL_EMPTY: black */
     { 64,  64,  192, 255 },  /* CELL_WALL: blue */
     { 255, 255, 0,   255 },  /* CELL_ITEM: yellow */
+    { 128, 128, 255, 255 },  /* CELL_PIVOT: light blue */
 };
 const SDL_Color PLAYER_COLOR = { 0, 255, 0, 255 };  /* Player: green */
 const SDL_Color GRID_LINE_COLOR = { 32, 32, 32, 255 }; /* Grid lines: dark gray */
@@ -239,10 +240,21 @@ void render_game(AppState* app) {
     /* Static optimization - track if content has actually changed */
     static uint32_t last_render_frame = 0;
     static bool player_was_moving = false;
+    static bool entity_was_moving = false;
+    
+    /* Check if any entity is moving */
+    bool any_entity_moving = false;
+    for (int i = 0; i < game->entities.count; i++) {
+        if (game->entities.is_active[i] && game->entities.is_moving[i]) {
+            any_entity_moving = true;
+            break;
+        }
+    }
     
     /* Skip rendering completely if game state hasn't changed */
     if (last_render_frame == game->frame_count &&
         player_was_moving == game->player.is_moving &&
+        entity_was_moving == any_entity_moving &&
         !app->is_paused) {
         /* No change at all - skip rendering completely */
         return;
@@ -251,6 +263,7 @@ void render_game(AppState* app) {
     /* Track state for next time */
     last_render_frame = game->frame_count;
     player_was_moving = game->player.is_moving;
+    entity_was_moving = any_entity_moving;
     
     /* On first render or after changes, regenerate background texture */
     if (game->grid_state.cells_changed) {
@@ -379,6 +392,97 @@ void render_game(AppState* app) {
                 player_rect.x + WINDOW_WIDTH :
                 player_rect.x - WINDOW_WIDTH;
                 SDL_RenderFillRect(renderer, &wrap_rect);
+            }
+        }
+    }
+    
+    /* 3b. Render all entities */
+    for (int i = 0; i < game->entities.count; i++) {
+        if (!game->entities.is_active[i]) {
+            continue;
+        }
+        
+        /* Get entity position */
+        float entity_x, entity_y;
+        get_entity_visual_position(game, i, &entity_x, &entity_y);
+        
+        /* Convert to viewport coordinates */
+        int entity_viewport_x, entity_viewport_y;
+        grid_to_viewport(game, (int)entity_x, (int)entity_y, &entity_viewport_x, &entity_viewport_y);
+        
+        /* Calculate fractional part */
+        float entity_frac_x = entity_x - (int)entity_x;
+        float entity_frac_y = entity_y - (int)entity_y;
+        
+        /* Create entity rectangle */
+        SDL_FRect entity_rect = {
+            (entity_viewport_x + entity_frac_x) * PIXEL_SCALE,
+            (entity_viewport_y + entity_frac_y) * PIXEL_SCALE,
+            PIXEL_SCALE,
+            PIXEL_SCALE
+        };
+        
+        /* Check for wrapping */
+        bool entity_wrapping_x = false;
+        bool entity_wrapping_y = false;
+        
+        if (game->entities.is_moving[i]) {
+            int target_vx, target_vy;
+            grid_to_viewport(game, game->entities.target_x[i], game->entities.target_y[i],
+                             &target_vx, &target_vy);
+            
+            /* Check for horizontal wrapping */
+            if (abs(target_vx - entity_viewport_x) > VIEWPORT_WIDTH/2) {
+                entity_wrapping_x = true;
+            }
+            
+            /* Check for vertical wrapping */
+            if (abs(target_vy - entity_viewport_y) > VIEWPORT_HEIGHT/2) {
+                entity_wrapping_y = true;
+            }
+        }
+        
+        /* Get entity color */
+        uint8_t entity_type = game->entities.entity_type[i];
+        if (entity_type >= ENTITY_MAX) {
+            entity_type = 0;
+        }
+        
+        /* Draw the entity */
+        SDL_SetRenderDrawColor(renderer,
+                               ENTITY_COLORS[entity_type].r,
+                               ENTITY_COLORS[entity_type].g,
+                               ENTITY_COLORS[entity_type].b,
+                               ENTITY_COLORS[entity_type].a);
+        SDL_RenderFillRect(renderer, &entity_rect);
+        
+        /* Handle wrapping */
+        if (entity_wrapping_x || entity_wrapping_y) {
+            SDL_FRect wrap_rect = entity_rect;
+            
+            if (entity_wrapping_x) {
+                /* Draw entity wrapping horizontally */
+                wrap_rect.x = entity_rect.x < WINDOW_WIDTH/2 ?
+                entity_rect.x + WINDOW_WIDTH :
+                entity_rect.x - WINDOW_WIDTH;
+                SDL_RenderFillRect(renderer, &wrap_rect);
+            }
+            
+            if (entity_wrapping_y) {
+                /* Draw entity wrapping vertically */
+                wrap_rect.x = entity_rect.x; /* Reset x from previous wrapping */
+                wrap_rect.y = entity_rect.y < WINDOW_HEIGHT/2 ?
+                entity_rect.y + WINDOW_HEIGHT :
+                entity_rect.y - WINDOW_HEIGHT;
+                SDL_RenderFillRect(renderer, &wrap_rect);
+                
+                if (entity_wrapping_x) {
+                    /* Draw entity wrapping both horizontally and vertically */
+                    wrap_rect.x = entity_rect.x < WINDOW_WIDTH/2 ?
+                    entity_rect.x + WINDOW_WIDTH :
+                    entity_rect.x - WINDOW_WIDTH;
+                    SDL_RenderFillRect(renderer, &wrap_rect);
+                }
             }
         }
     }

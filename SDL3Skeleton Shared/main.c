@@ -330,7 +330,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
      */
     bool update_needed = game->player.is_moving || app->game_state_changed;
     
-    if (update_needed) {
+    if (update_needed || game->entities.needs_update) {
         /* Process game logic only when needed */
         int delta_time = (int)(current_time - game->last_tick_time);
         game->last_tick_time = current_time;
