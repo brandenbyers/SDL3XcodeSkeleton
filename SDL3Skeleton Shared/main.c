@@ -44,13 +44,11 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     SDL_SetHint("SDL_FRAMEBUFFER_ACCELERATION", "1");           /* Force acceleration */
     SDL_SetHint("SDL_HINT_RENDER_DRIVER_DISCARD_CLEAR", "1");   /* Optimize clear operation */
     
-    /* Critical: Only initialize subsystems we absolutely need */
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    /* Initialize SDL with video and gamepad subsystems */
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         SDL_Log("Failed to initialize SDL: %s", SDL_GetError());
         return SDL_APP_FAILURE;
     }
-    
-    /* Initialize gamepad later, only when needed */
     
     /* Allocate application state */
     AppState* app = SDL_calloc(1, sizeof(AppState));
@@ -105,9 +103,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     /* Create textures */
     create_textures(app);
     
-    /* Initialize gamepad (defer until actually needed) */
-    app->gamepad = NULL;
-    app->gamepad_id = 0;
+    /* Initialize gamepad immediately for better responsiveness */
+    initialize_gamepad(app);
     
     /* Initialize FPS counter */
     app->last_fps_time = SDL_GetTicks();
@@ -148,11 +145,6 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
     
     /* Reset activity timer for any user interaction */
     if (is_activity_event) {
-        /* Only initialize gamepad on first gamepad event */
-        if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && app->gamepad == NULL) {
-            initialize_gamepad(app);
-        }
-        
         reset_activity_timer(app);
         
         /* In efficient mode, force immediate render after user input */
@@ -205,6 +197,30 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             }
             break;
             
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            /* Process gamepad button press */
+            if (!app->is_paused) {
+                process_gamepad_button_event(&game->input, event->gbutton.button, true);
+                app->game_state_changed = true;
+            }
+            break;
+            
+        case SDL_EVENT_GAMEPAD_BUTTON_UP:
+            /* Process gamepad button release */
+            if (!app->is_paused) {
+                process_gamepad_button_event(&game->input, event->gbutton.button, false);
+                app->game_state_changed = true;
+            }
+            break;
+            
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            /* Process gamepad axis motion */
+            if (!app->is_paused) {
+                process_gamepad_axis_event(&game->input, event->gaxis.axis, event->gaxis.value);
+                app->game_state_changed = true;
+            }
+            break;
+            
         case SDL_EVENT_WINDOW_RESIZED:
             configure_rendering(app);
             app->needs_render = true;
@@ -233,17 +249,19 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
             break;
             
         case SDL_EVENT_GAMEPAD_ADDED:
-            /* Only initialize gamepad if we need it */
+            /* Connect the gamepad if we don't have one yet */
             if (app->gamepad == NULL) {
                 initialize_gamepad(app);
             }
             break;
             
         case SDL_EVENT_GAMEPAD_REMOVED:
-            /* Clean up gamepad resources */
-            if (app->gamepad) {
+            /* Only clean up if it's our gamepad that was removed */
+            if (app->gamepad && event->gdevice.which == app->gamepad_id) {
+                SDL_Log("Gamepad disconnected: %d", event->gdevice.which);
                 SDL_CloseGamepad(app->gamepad);
                 app->gamepad = NULL;
+                app->gamepad_id = 0;
             }
             break;
             
@@ -328,6 +346,11 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
             update_game_logic_fixed_step(game);
             game->accumulated_time = 0; /* Just reset to avoid drift */
             app->needs_render = true;
+        }
+        
+        /* Poll the gamepad for input in case we missed some events */
+        if (app->gamepad) {
+            process_gamepad_state(&game->input, app->gamepad);
         }
     }
     

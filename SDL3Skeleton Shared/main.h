@@ -218,6 +218,8 @@ CellType get_cell_from_cache(const GameState* game, int viewport_x, int viewport
 
 /* Input functions (input.c) */
 void process_key_event(InputState* input, SDL_Scancode key, bool pressed);
+void process_gamepad_button_event(InputState* input, uint8_t button, bool pressed);
+void process_gamepad_axis_event(InputState* input, uint8_t axis, int16_t value);
 void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad);
 bool is_key_pressed(const InputState* input, Direction dir);
 void set_key_state(InputState* input, Direction dir, bool pressed);

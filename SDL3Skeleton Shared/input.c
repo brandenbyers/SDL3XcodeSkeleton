@@ -80,6 +80,106 @@ void process_key_event(InputState* input, SDL_Scancode key, bool pressed) {
     }
 }
 
+/* Process gamepad button press/release */
+void process_gamepad_button_event(InputState* input, Uint8 button, bool pressed) {
+    Direction dir = DIR_NONE;
+    
+    /* Map gamepad buttons to directions */
+    switch (button) {
+        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+            dir = DIR_RIGHT;
+            break;
+        case SDL_GAMEPAD_BUTTON_DPAD_UP:
+            dir = DIR_UP;
+            break;
+        case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+            dir = DIR_LEFT;
+            break;
+        case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+            dir = DIR_DOWN;
+            break;
+        case SDL_GAMEPAD_BUTTON_START:
+            set_restart_requested(input, pressed);
+            return;
+    }
+    
+    /* Update direction key state if valid direction */
+    if (dir != DIR_NONE) {
+        set_key_state(input, dir, pressed);
+        
+        /* If button was pressed, update current direction */
+        if (pressed) {
+            input->current_dir = dir;
+        }
+        /* If button was released and it was the current direction, find new current direction */
+        else if (dir == input->current_dir) {
+            /* Use standard bit check instead of bit scan for compatibility */
+            uint8_t keys = input->key_states & 0x0F; /* Get just direction bits */
+            input->current_dir = DIR_NONE;
+            for (int i = 0; i < DIR_COUNT; i++) {
+                if (keys & (1 << i)) {
+                    input->current_dir = i;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/* Process gamepad axis movement */
+void process_gamepad_axis_event(InputState* input, Uint8 axis, Sint16 value) {
+    const float deadzone = 0.5f;
+    float normalized = value / 32767.0f;
+    Direction dir = DIR_NONE;
+    bool pressed = false;
+    
+    /* Check which axis and direction */
+    if (axis == SDL_GAMEPAD_AXIS_LEFTX) {
+        if (normalized > deadzone) {
+            dir = DIR_RIGHT;
+            pressed = true;
+        } else if (normalized < -deadzone) {
+            dir = DIR_LEFT;
+            pressed = true;
+        } else {
+            /* Release both left and right if in deadzone */
+            set_key_state(input, DIR_RIGHT, false);
+            set_key_state(input, DIR_LEFT, false);
+        }
+    } else if (axis == SDL_GAMEPAD_AXIS_LEFTY) {
+        if (normalized > deadzone) {
+            dir = DIR_DOWN;
+            pressed = true;
+        } else if (normalized < -deadzone) {
+            dir = DIR_UP;
+            pressed = true;
+        } else {
+            /* Release both up and down if in deadzone */
+            set_key_state(input, DIR_UP, false);
+            set_key_state(input, DIR_DOWN, false);
+        }
+    }
+    
+    /* Update key state if a direction was determined */
+    if (dir != DIR_NONE) {
+        set_key_state(input, dir, pressed);
+        
+        if (pressed) {
+            input->current_dir = dir;
+        } else if (dir == input->current_dir) {
+            /* If this axis was controlling the current direction, find a new direction */
+            uint8_t keys = input->key_states & 0x0F; /* Get just direction bits */
+            input->current_dir = DIR_NONE;
+            for (int i = 0; i < DIR_COUNT; i++) {
+                if (keys & (1 << i)) {
+                    input->current_dir = i;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /* Efficient gamepad state polling with throttling */
 void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad) {
     if (!gamepad) return;
@@ -143,22 +243,31 @@ void process_gamepad_state(InputState* input, SDL_Gamepad* gamepad) {
 
 /* Initialize gamepad */
 void initialize_gamepad(AppState* app) {
+    SDL_Log("Initializing gamepad subsystem...");
+    
+    /* SDL3 doesn't need separate initialization - it's done in SDL_Init */
+    
+    /* Check for connected gamepads */
     int count = 0;
     SDL_JoystickID* gamepads = SDL_GetGamepads(&count);
     
     if (!gamepads || count < 1) {
+        SDL_Log("No gamepads found");
         app->gamepad = NULL;
         app->gamepad_id = 0;
-        SDL_free(gamepads);
+        if (gamepads) SDL_free(gamepads);
         return;
     }
     
+    /* Open the first gamepad */
     SDL_JoystickID device_id = gamepads[0];
     app->gamepad = SDL_OpenGamepad(device_id);
     if (app->gamepad) {
         app->gamepad_id = device_id;
         const char* name = SDL_GetGamepadName(app->gamepad);
-        SDL_Log("Controller connected: %s", name ? name : "Unknown");
+        SDL_Log("Gamepad connected: %s", name ? name : "Unknown");
+    } else {
+        SDL_Log("Failed to open gamepad: %s", SDL_GetError());
     }
     
     SDL_free(gamepads);
