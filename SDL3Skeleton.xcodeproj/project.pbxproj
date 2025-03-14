@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		DE6F3C8F2D83A7BC0049F62A /* SDL3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; };
 		DE7A8F8E2CD57540005DBB53 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = DE7A8F8D2CD5753A005DBB53 /* .gitignore */; };
 		DE7A8F952CD57950005DBB53 /* SDL3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; };
 		DE7A8F962CD57950005DBB53 /* SDL3.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DE7A8F912CD5793B005DBB53 /* SDL3.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -73,6 +74,21 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		DE6F3C862D83A7820049F62A /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3SkeletonTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				collision.c,
+				entity.c,
+				game.c,
+				input.c,
+				level.c,
+				main.c,
+				platform.c,
+				render.c,
+				viewport.c,
+			);
+			target = DE7A8FA12CD57B41005DBB53 /* SDL3SkeletonTests */;
+		};
 		DE7A8F7A2CD55A34005DBB53 /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3Skeleton iOS" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -135,6 +151,7 @@
 				DE7A8F7A2CD55A34005DBB53 /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3Skeleton iOS" target */,
 				DE7A8F7E2CD55A34005DBB53 /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3Skeleton tvOS" target */,
 				DE7A8F822CD55A34005DBB53 /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3Skeleton macOS" target */,
+				DE6F3C862D83A7820049F62A /* Exceptions for "SDL3Skeleton Shared" folder in "SDL3SkeletonTests" target */,
 			);
 			path = "SDL3Skeleton Shared";
 			sourceTree = "<group>";
@@ -190,6 +207,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE6F3C8F2D83A7BC0049F62A /* SDL3.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

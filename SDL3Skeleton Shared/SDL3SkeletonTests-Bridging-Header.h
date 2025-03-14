@@ -3,3 +3,10 @@
 //
 
 #include "main.h"
+#include "game.h"
+#include "collision.h"
+#include "viewport.h"
+#include "entity.h"
+#include "input.h"
+#include "level.h"
+#include "render.h"
